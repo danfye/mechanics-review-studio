@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>力学复习台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark"><i data-lucide="blocks"></i></div>
+          <div>
+            <h1>力学复习台</h1>
+            <p>本地资料库</p>
+          </div>
+        </div>
+
+        <form id="course-form" class="course-form">
+          <label for="course-name">科目</label>
+          <div class="inline-input">
+            <input id="course-name" name="name" placeholder="如 材料力学" autocomplete="off" />
+            <button type="submit" class="icon-button" title="新建科目" aria-label="新建科目">
+              <i data-lucide="plus"></i>
+            </button>
+          </div>
+        </form>
+
+        <nav id="course-list" class="course-list" aria-label="科目列表"></nav>
+
+        <div class="sidebar-stats">
+          <div>
+            <span id="stat-docs">0</span>
+            <small>资料</small>
+          </div>
+          <div>
+            <span id="stat-mistakes">0</span>
+            <small>错题</small>
+          </div>
+          <div>
+            <span id="stat-sessions">0</span>
+            <small>复盘</small>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-copy">
+            <p class="eyebrow">Final Week Workspace</p>
+            <h2 id="current-course-title">先新建一个科目</h2>
+            <p class="topbar-subtitle">把课件、题目和复盘记录集中到一个清晰的学习工作台。</p>
+          </div>
+          <div class="topbar-actions">
+            <div class="status-pill" id="provider-pill">
+              <i data-lucide="cpu"></i>
+              <span>本地模式</span>
+            </div>
+          </div>
+        </header>
+
+        <section class="upload-band">
+          <form id="upload-form" class="upload-form">
+            <input id="file-input" type="file" name="files" multiple accept=".pptx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md" />
+            <label for="file-input" class="upload-target">
+              <i data-lucide="upload-cloud"></i>
+              <span>上传 PPTX、PDF、图片或文本文件</span>
+            </label>
+            <button type="submit" class="primary-button">
+              <i data-lucide="file-up"></i>
+              导入资料
+            </button>
+          </form>
+          <details class="text-import-panel">
+            <summary><i data-lucide="text-cursor-input"></i>粘贴纯文字例题</summary>
+            <form id="text-import-form" class="text-import-form">
+              <label>
+                资料名称
+                <input id="text-import-name" placeholder="如 轴向拉压例题.txt" autocomplete="off" />
+              </label>
+              <label>
+                例题文本
+                <textarea id="text-import-content" placeholder="例题 1：已知...&#10;求：...&#10;解：..."></textarea>
+              </label>
+              <button type="submit" class="primary-button"><i data-lucide="plus"></i>导入文字</button>
+            </form>
+          </details>
+          <p id="upload-note" class="muted">资料按科目保存在本机项目目录，不会自动上传到外部服务。</p>
+        </section>
+
+        <div class="tabs" role="tablist" aria-label="功能">
+          <button class="tab-button active" data-tab="documents"><i data-lucide="folder-open"></i>资料</button>
+          <button class="tab-button" data-tab="summary"><i data-lucide="list-checks"></i>知识点</button>
+          <button class="tab-button" data-tab="planner"><i data-lucide="calendar-check"></i>复习计划</button>
+          <button class="tab-button" data-tab="cram"><i data-lucide="flame"></i>冲刺包</button>
+          <button class="tab-button" data-tab="quiz"><i data-lucide="pencil-ruler"></i>刷题</button>
+          <button class="tab-button" data-tab="ask"><i data-lucide="message-square-text"></i>问答</button>
+          <button class="tab-button" data-tab="mistakes"><i data-lucide="bookmark-x"></i>错题</button>
+          <button class="tab-button" data-tab="settings"><i data-lucide="settings"></i>设置</button>
+        </div>
+
+        <section id="view-documents" class="view active-view">
+          <div class="split-view">
+            <div>
+              <div class="section-heading">
+                <h3>资料列表</h3>
+                <button id="select-all-docs" class="secondary-button"><i data-lucide="check-square"></i>全选</button>
+              </div>
+              <div id="document-list" class="item-list"></div>
+            </div>
+            <article class="detail-panel">
+              <div class="section-heading">
+                <h3>PPT 定位</h3>
+                <span id="doc-preview-meta" class="muted">选择一份资料</span>
+              </div>
+              <div id="doc-outline" class="doc-outline empty-state">上传资料后，这里会显示分页划分。</div>
+              <div id="doc-file-frame-wrap" class="doc-file-frame-wrap" hidden>
+                <div class="doc-file-toolbar">
+                  <span id="doc-file-page" class="muted"></span>
+                  <a id="doc-file-link" class="secondary-link" target="_blank" rel="noreferrer">打开原文件</a>
+                </div>
+                <iframe id="doc-file-frame" class="doc-file-frame" title="原文件预览"></iframe>
+              </div>
+              <pre id="doc-preview" class="text-preview">上传资料后，这里会显示抽取出的文本。</pre>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-summary" class="view">
+          <div class="tool-row">
+            <button id="generate-summary" class="primary-button"><i data-lucide="sparkles"></i>生成知识地图</button>
+            <span id="summary-status" class="muted"></span>
+          </div>
+          <div id="knowledge-map" class="knowledge-map empty-state">选择资料后生成知识地图。</div>
+          <article id="summary-output" class="markdown-output empty-state">生成后这里会保留详细复习提纲。</article>
+        </section>
+
+        <section id="view-planner" class="view">
+          <div class="tool-row">
+            <label>
+              考试日期
+              <input id="plan-exam-date" type="date" />
+            </label>
+            <label>
+              每天分钟
+              <input id="plan-daily-minutes" type="number" min="20" max="480" value="90" />
+            </label>
+            <label>
+              目标
+              <select id="plan-goal">
+                <option value="高分">高分</option>
+                <option value="及格">及格</option>
+                <option value="冲刺满分">冲刺满分</option>
+              </select>
+            </label>
+            <label class="check-label"><input id="plan-cramming" type="checkbox" />临时抱佛脚</label>
+            <button id="generate-plan" class="primary-button"><i data-lucide="calendar-plus"></i>生成复习计划</button>
+            <span id="planner-status" class="muted"></span>
+          </div>
+          <section id="planner-next" class="planner-next empty-state">生成计划后，这里会显示下一步该复盘的章节或专题。</section>
+          <div class="planner-layout">
+            <div id="planner-grid" class="planner-grid"></div>
+            <aside class="session-panel">
+              <div class="section-heading">
+                <h3>完成记录</h3>
+                <span class="muted">按当前科目</span>
+              </div>
+              <div id="session-list" class="item-list"></div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="view-cram" class="view">
+          <div class="tool-row">
+            <label>
+              冲刺时长
+              <input id="cram-total-minutes" type="number" min="30" max="240" value="90" />
+            </label>
+            <label>
+              限时题量
+              <input id="cram-question-count" type="number" min="3" max="20" value="10" />
+            </label>
+            <button id="generate-cram" class="primary-button"><i data-lucide="flame"></i>生成冲刺包</button>
+            <span id="cram-status" class="muted"></span>
+          </div>
+          <section id="cram-output" class="cram-output empty-state">生成后会按该科目资料、错题和复盘记录汇总出今天最该做的冲刺清单。</section>
+        </section>
+
+        <section id="view-quiz" class="view">
+          <div class="quiz-controls">
+            <label>
+              题量
+              <input id="quiz-count" type="number" min="3" max="30" value="8" />
+            </label>
+            <label>
+              难度
+              <select id="quiz-difficulty">
+                <option value="混合">混合</option>
+                <option value="basic">basic</option>
+                <option value="medium">medium</option>
+                <option value="hard">hard</option>
+                <option value="comprehensive">comprehensive</option>
+              </select>
+            </label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="concept_understanding" checked />概念</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="formula_application" checked />公式</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="calculation" checked />计算</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="derivation_proof" checked />推导</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="mistake_diagnosis" checked />易错</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="exam_practice" checked />考试题</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="textbook_exercise" checked />教材题</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="variant" checked />变式</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="comprehensive" checked />综合</label>
+            <label class="check-label"><input type="checkbox" name="quiz-type" value="subjective_recall" checked />复述</label>
+            <button id="generate-quiz" class="primary-button"><i data-lucide="play"></i>生成题目</button>
+          </div>
+          <div id="quiz-quality" class="quality-panel empty-state">生成题目后显示质量评估。</div>
+          <div id="quiz-status" class="muted"></div>
+          <div id="quiz-list" class="item-list"></div>
+        </section>
+
+        <section id="view-ask" class="view">
+          <form id="ask-form" class="ask-box">
+            <input id="ask-input" placeholder="比如：弯矩正负号怎么判断？这章有哪些易错点？" autocomplete="off" />
+            <button class="primary-button" type="submit"><i data-lucide="send"></i>提问</button>
+          </form>
+          <article id="ask-output" class="markdown-output empty-state">本地模式会先检索相关片段；接入 API 后会基于资料组织回答。</article>
+        </section>
+
+        <section id="view-mistakes" class="view">
+          <div class="section-heading">
+            <h3>错题本</h3>
+            <span class="muted">保存你答错或想考前再看的题。</span>
+          </div>
+          <div id="mistake-list" class="item-list"></div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <form id="settings-form" class="settings-grid">
+            <div class="mode-toggle" role="radiogroup" aria-label="生成模式">
+              <label><input type="radio" name="provider" value="local" checked />本地规则版</label>
+              <label><input type="radio" name="provider" value="api" />API 增强版</label>
+            </div>
+            <label>
+              API Base URL
+              <input id="api-base-url" placeholder="https://api.openai.com/v1" autocomplete="off" />
+            </label>
+            <label>
+              模型名
+              <input id="api-model" placeholder="例如 gpt-4.1-mini 或兼容模型名" autocomplete="off" />
+            </label>
+            <label>
+              API Key
+              <input id="api-key" type="password" placeholder="留空表示不修改已保存的 key" autocomplete="off" />
+            </label>
+            <label class="check-label"><input id="clear-api-key" type="checkbox" />清除已保存的 API Key</label>
+            <button class="primary-button" type="submit"><i data-lucide="save"></i>保存设置</button>
+          </form>
+          <p class="muted settings-note">API 配置只写入本项目的 data/db.json。默认本地模式不调用外部服务。</p>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="/vendor/marked.umd.js"></script>
+    <script src="/vendor/lucide.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

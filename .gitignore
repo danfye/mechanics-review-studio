@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+# Local app data and uploaded course materials
+data/db.json
+data/uploads/
+
+# Local environment and Codex runtime files
+.env
+.env.*
+.codex/
+.codex_rollback_backup/
+
+# OS/editor/log noise
+.DS_Store
+npm-debug.log*
+*.log

@@ -1,0 +1,26 @@
+{
+  "name": "mechanics-review-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first final-week review assistant for mechanics courses.",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs",
+    "package:share": "node scripts/package-share.cjs",
+    "test:core": "node scripts/core-test.cjs",
+    "smoke": "node scripts/smoke-test.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "lucide": "1.8.0",
+    "marked": "17.0.5",
+    "pdfjs-dist": "5.6.205",
+    "xml-js": "1.6.11"
+  },
+  "devDependencies": {
+    "pdf-lib": "1.17.1"
+  }
+}
