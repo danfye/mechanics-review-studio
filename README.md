@@ -18,6 +18,8 @@
 
 ## 启动
 
+直接双击根目录里的 `启动-力学复习台.command`（macOS）或 `启动-力学复习台.bat`（Windows）也可以。
+
 ```bash
 npm install
 npm start
