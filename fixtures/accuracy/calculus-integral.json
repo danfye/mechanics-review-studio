@@ -1,0 +1,60 @@
+{
+  "id": "calculus-integral",
+  "course": {
+    "id": "fixture_course_calculus",
+    "name": "高等数学"
+  },
+  "documents": [
+    {
+      "id": "fixture_calc_notes",
+      "courseId": "fixture_course_calculus",
+      "originalName": "微分积分复习.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n导数与微分。导数定义 f'(x) = lim Δx→0 [f(x+Δx)-f(x)]/Δx。链式法则 (f(g(x)))' = f'(g(x))g'(x)。例题 1：求 y=ln(1+x^2) 的导数。\n\n## 第 2 页\n定积分与牛顿-莱布尼茨公式。若 F'(x)=f(x)，则 ∫_a^b f(x) dx = F(b)-F(a)。换元积分和分部积分 ∫u dv=uv-∫v du。作业题 1：计算 ∫_0^1 2x dx。常见错误：忘记上下限代入顺序。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "导数与微分。导数定义 f'(x) = lim Δx→0 [f(x+Δx)-f(x)]/Δx。链式法则 (f(g(x)))' = f'(g(x))g'(x)。例题 1：求 y=ln(1+x^2) 的导数。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "定积分与牛顿-莱布尼茨公式。若 F'(x)=f(x)，则 ∫_a^b f(x) dx = F(b)-F(a)。换元积分和分部积分 ∫u dv=uv-∫v du。作业题 1：计算 ∫_0^1 2x dx。常见错误：忘记上下限代入顺序。"
+        }
+      ]
+    }
+  ],
+  "mistakes": [
+    {
+      "id": "fixture_calc_mistake_1",
+      "courseId": "fixture_course_calculus",
+      "question": "计算定积分时把 F(a)-F(b) 写反。",
+      "answer": "牛顿-莱布尼茨公式是 F(b)-F(a)。",
+      "explanation": "错因是没有先写清上下限和原函数。",
+      "mastered": false,
+      "sourceDocumentIds": ["fixture_calc_notes"],
+      "sourceRefs": [
+        {
+          "document_id": "fixture_calc_notes",
+          "unit_index": 1,
+          "unit_label": "第 2 页",
+          "excerpt": "∫_a^b f(x) dx = F(b)-F(a)"
+        }
+      ]
+    }
+  ],
+  "sessions": [],
+  "expected": {
+    "conceptTerms": ["导数", "定积分"],
+    "formulaTerms": ["F(b)", "F(a)"],
+    "questionTerms": ["定积分", "导数"],
+    "minimums": {
+      "documents": 1,
+      "concepts": 3,
+      "formulas": 1,
+      "questions": 8,
+      "planItems": 1,
+      "cramFocusTopics": 1,
+      "sourceRefCoverage": 0.75
+    }
+  }
+}

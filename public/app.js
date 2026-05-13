@@ -1,6 +1,7 @@
 (function () {
   const state = {
     data: null,
+    index: createStateIndex(),
     currentCourseId: null,
     selectedDocumentIds: new Set(),
     editingCourseId: null,
@@ -14,11 +15,63 @@
     currentMindMap: null,
     currentPlan: null,
     currentCramPack: null,
+    currentSolution: null,
     pendingSourceHighlight: null,
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+  function createStateIndex(data = {}) {
+    const workspaceData = data?.workspace || {};
+    const courses = data?.courses || [];
+    const documents = data?.documents || [];
+    const mistakes = data?.mistakes || [];
+    const sessions = data?.sessions || [];
+    const solvedQuestions = data?.solvedQuestions || [];
+    const workspaceCourses = workspaceData.courses || [];
+    const workspaceDocuments = workspaceData.documents || [];
+    const documentsByCourseAndName = new Map();
+    for (const doc of documents) {
+      if (doc.courseId && doc.originalName) documentsByCourseAndName.set(courseDocumentNameKey(doc.courseId, doc.originalName), doc);
+    }
+    return {
+      coursesById: mapById(courses),
+      courseViewsById: mapById(workspaceCourses),
+      documentViewsById: mapById(workspaceDocuments),
+      documentsById: mapById(documents),
+      documentsByCourseId: groupByKey(documents, (doc) => doc.courseId),
+      documentViewsByCourseId: groupByKey(workspaceDocuments, (doc) => doc.courseId),
+      mistakesByCourseId: groupByKey(mistakes, (mistake) => mistake.courseId),
+      sessionsByCourseId: groupByKey(sessions, (session) => session.courseId),
+      solvedQuestionsByCourseId: groupByKey(solvedQuestions, (item) => item.courseId),
+      documentsByCourseAndName,
+    };
+  }
+
+  function setStateData(data) {
+    state.data = data;
+    state.index = createStateIndex(data);
+  }
+
+  function mapById(items = []) {
+    return new Map(items.filter((item) => item?.id).map((item) => [item.id, item]));
+  }
+
+  function groupByKey(items = [], keyFn) {
+    const groups = new Map();
+    for (const item of items) {
+      const key = keyFn(item);
+      const group = groups.get(key) || [];
+      group.push(item);
+      groups.set(key, group);
+    }
+    return groups;
+  }
+
+  function courseDocumentNameKey(courseId, fileName) {
+    return `${courseId || ""}::${fileName || ""}`;
+  }
 
   function workspace() {
     return state.data?.workspace || { courses: [], documents: [], providerLabel: "本地模式", stats: {} };
@@ -30,15 +83,15 @@
   }
 
   function courseView(courseId = state.currentCourseId) {
-    return (workspace().courses || []).find((course) => course.id === courseId) || null;
+    return state.index.courseViewsById.get(courseId) || state.index.coursesById.get(courseId) || null;
   }
 
   function documentView(documentId) {
-    return (workspace().documents || []).find((doc) => doc.id === documentId) || null;
+    return state.index.documentViewsById.get(documentId) || null;
   }
 
   function courseDocumentViews(courseId = state.currentCourseId) {
-    return (workspace().documents || []).filter((doc) => doc.courseId === courseId);
+    return state.index.documentViewsByCourseId.get(courseId) || [];
   }
 
   function iconRefresh() {
@@ -53,6 +106,48 @@
     toast.timer = window.setTimeout(() => el.classList.remove("show"), 2600);
   }
 
+  function setActiveTab(tab, options = {}) {
+    const button = $(`.tab-button[data-tab="${tab}"]`);
+    const view = $(`#view-${tab}`);
+    if (!button || !view) return false;
+    state.activeTab = tab;
+    $$(".tab-button").forEach((item) => {
+      const selected = item === button;
+      item.classList.toggle("active", selected);
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+    });
+    $$(".view").forEach((item) => {
+      const selected = item === view;
+      item.classList.toggle("active-view", selected);
+      item.hidden = !selected;
+    });
+    if (options.renderIcons !== false) iconRefresh();
+    return true;
+  }
+
+  async function withBusy(control, task, options = {}) {
+    const element = typeof control === "string" ? $(control) : control;
+    if (!element || element.disabled) return null;
+    const originalHtml = element.innerHTML;
+    const originalLabel = element.getAttribute("aria-label");
+    const busyLabel = options.label || element.textContent.trim() || "处理中";
+    element.disabled = true;
+    element.setAttribute("aria-busy", "true");
+    if (!originalLabel) element.setAttribute("aria-label", busyLabel);
+    if (options.busyHtml) element.innerHTML = options.busyHtml;
+    try {
+      return await task();
+    } finally {
+      element.disabled = false;
+      element.removeAttribute("aria-busy");
+      if (options.busyHtml) element.innerHTML = originalHtml;
+      if (originalLabel === null) element.removeAttribute("aria-label");
+      else element.setAttribute("aria-label", originalLabel);
+      iconRefresh();
+    }
+  }
+
   async function api(path, options = {}) {
     const response = await fetch(path, {
       headers: options.body instanceof FormData ? undefined : { "content-type": "application/json" },
@@ -61,7 +156,7 @@
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "请求失败");
     if (data.state) {
-      state.data = data.state;
+      setStateData(data.state);
       keepValidCourse();
       render();
     }
@@ -79,6 +174,7 @@
       state.previewUnitIndex = 0;
       state.currentPlan = null;
       state.currentCramPack = null;
+      state.currentSolution = null;
       return;
     }
     if (!state.currentCourseId || !courses.some((course) => course.id === state.currentCourseId)) {
@@ -96,19 +192,23 @@
   }
 
   function currentCourse() {
-    return (state.data?.courses || []).find((course) => course.id === state.currentCourseId) || courseView();
+    return state.index.coursesById.get(state.currentCourseId) || courseView();
   }
 
   function courseDocuments(courseId = state.currentCourseId) {
-    return (state.data?.documents || []).filter((doc) => doc.courseId === courseId);
+    return state.index.documentsByCourseId.get(courseId) || [];
   }
 
   function courseMistakes(courseId = state.currentCourseId) {
-    return (state.data?.mistakes || []).filter((mistake) => mistake.courseId === courseId);
+    return state.index.mistakesByCourseId.get(courseId) || [];
   }
 
   function courseSessions(courseId = state.currentCourseId) {
-    return (state.data?.sessions || []).filter((session) => session.courseId === courseId);
+    return state.index.sessionsByCourseId.get(courseId) || [];
+  }
+
+  function courseSolvedQuestions(courseId = state.currentCourseId) {
+    return state.index.solvedQuestionsByCourseId.get(courseId) || [];
   }
 
   function selectedDocumentIds() {
@@ -125,6 +225,7 @@
     renderMistakes();
     renderPlanner();
     renderCramPack();
+    renderSolver();
     renderSettings();
     iconRefresh();
   }
@@ -172,6 +273,8 @@
   function renderStats() {
     const stats = courseView()?.stats || {};
     $("#stat-docs").textContent = Number(stats.documents ?? courseDocuments().length);
+    $("#stat-packs").textContent = Number(stats.learningPacks || 0);
+    $("#stat-drills").textContent = Number(stats.learningPackDrills || 0);
     $("#stat-mistakes").textContent = Number(stats.mistakes ?? courseMistakes().length);
     $("#stat-sessions").textContent = Number(stats.sessions ?? courseSessions().length);
   }
@@ -187,12 +290,15 @@
     const docs = courseDocuments();
     const list = $("#document-list");
     if (!docs.length) {
-      list.innerHTML = '<article class="item-card"><p class="muted">还没有资料。先上传文件或粘贴纯文字例题。</p></article>';
-      $("#doc-preview").textContent = "上传资料后，这里会显示抽取出的文本。";
+      list.innerHTML = '<article class="item-card"><p class="muted">暂无资料。</p></article>';
+      $("#doc-preview").textContent = "";
+      $("#doc-preview-summary").textContent = "暂无摘要。";
+      $("#doc-preview-summary").className = "doc-preview-summary empty-state";
       $("#doc-preview-meta").textContent = "暂无资料";
-      $("#doc-outline").textContent = "上传资料后，这里会显示分页划分。";
+      $("#doc-outline").textContent = "暂无分页";
       $("#doc-outline").className = "doc-outline empty-state";
       $("#doc-file-frame-wrap").hidden = true;
+      $("#doc-preview-panel").open = false;
       state.previewDocumentId = null;
       state.previewUnitIndex = 0;
       return;
@@ -205,6 +311,7 @@
         const textLength = view.textLengthLabel || (doc.text ? `${doc.text.length} 字` : "无文本");
         const warning = view.warning ? `<span class="chip warn">${escapeHtml(view.warning)}</span>` : "";
         const sourceChip = view.isTextExample ? '<span class="chip">纯文字例题</span>' : "";
+        const learningPackCard = renderDocumentLearningPack(view.learningPack || doc.learningPack || doc.knowledgeModel?.learning_pack);
         const quality = view.parseQuality || doc.parseQuality || doc.knowledgeModel?.parse_quality;
         const counts = quality?.counts || {};
         const qualityChip = quality
@@ -224,6 +331,11 @@
           .slice(0, 6)
           .map((word) => `<span class="chip">${escapeHtml(word)}</span>`)
           .join("");
+        const detailRows = [
+          `<div class="doc-meta compact-meta"><span class="chip">${formatBytes(doc.size)}</span><span class="chip">${textLength}</span></div>`,
+          structureStats,
+          keywords ? `<div class="doc-meta compact-meta">${keywords}</div>` : "",
+        ].filter(Boolean);
         const editForm =
           state.editingDocumentId === doc.id
             ? `<form class="doc-edit-form" data-doc-id="${doc.id}">
@@ -248,21 +360,26 @@
               <h4>${escapeHtml(doc.originalName)}</h4>
             </label>
             <div class="document-actions">
-              <button class="secondary-button preview-doc" type="button"><i data-lucide="eye"></i>预览</button>
-              <button class="secondary-button edit-doc" type="button"><i data-lucide="pencil"></i>修改</button>
-              <button class="danger-button delete-doc" type="button"><i data-lucide="trash-2"></i>删除</button>
+              <button class="secondary-icon-button preview-doc" type="button" title="预览" aria-label="预览"><i data-lucide="eye"></i></button>
+              <button class="secondary-icon-button edit-doc" type="button" title="修改" aria-label="修改"><i data-lucide="pencil"></i></button>
+              <button class="danger-icon-button delete-doc" type="button" title="删除" aria-label="删除"><i data-lucide="trash-2"></i></button>
             </div>
           </div>
           <div class="doc-meta">
             <span class="chip">${escapeHtml(view.type || (doc.type || "file").toUpperCase())}</span>
             ${sourceChip}
-            <span class="chip">${formatBytes(doc.size)}</span>
-            <span class="chip">${textLength}</span>
             ${qualityChip}
             ${warning}
           </div>
-          ${structureStats}
-          <div class="doc-meta">${keywords}</div>
+          ${learningPackCard}
+          ${
+            detailRows.length
+              ? `<details class="card-detail-toggle">
+                <summary>解析细节</summary>
+                ${detailRows.join("")}
+              </details>`
+              : ""
+          }
           ${editForm}
         </article>`;
       })
@@ -273,6 +390,31 @@
     showPreview(previewDoc, state.previewDocumentId ? state.previewUnitIndex : 0);
   }
 
+  function renderDocumentLearningPack(pack) {
+    if (!pack) return "";
+    const coverage = pack.coverage || {};
+    const stats = [
+      ["知识", coverage.concepts],
+      ["公式", coverage.formulas],
+      ["题型", coverage.problemTemplates],
+      ["防错", coverage.pitfalls],
+      ["训练", coverage.drillTemplates],
+    ]
+      .filter(([, value]) => Number(value || 0) > 0)
+      .slice(0, 5)
+      .map(([label, value]) => `<span><strong>${Number(value || 0)}</strong>${label}</span>`)
+      .join("");
+    const summary = pack.summary || "导入后会沉淀可复习内容。";
+    return `<div class="learning-pack-strip">
+      <div class="learning-pack-title">
+        <i data-lucide="package-check"></i>
+        <span>增量知识包</span>
+      </div>
+      <p>${renderInlineText(conciseText(summary, 92))}</p>
+      ${stats ? `<div class="learning-pack-stats">${stats}</div>` : ""}
+    </div>`;
+  }
+
   function showPreview(doc, unitIndex = 0) {
     if (!doc) return;
     const units = documentUnits(doc);
@@ -281,14 +423,21 @@
     state.previewDocumentId = doc.id;
     state.previewUnitIndex = safeIndex;
 
-    $("#doc-preview").textContent = unit?.text || doc.warning || "这份资料暂时没有可预览文本。";
+    const previewText = unit?.text || doc.warning || "";
+    $("#doc-preview").textContent = previewText;
+    const digest = previewDigest(previewText);
+    const summaryTarget = $("#doc-preview-summary");
+    summaryTarget.className = `doc-preview-summary${digest ? "" : " empty-state"}`;
+    summaryTarget.innerHTML = digest ? renderInlineText(digest) : "暂无摘要。";
     const highlight =
       state.pendingSourceHighlight?.docId === doc.id && state.pendingSourceHighlight?.unitIndex === safeIndex
         ? ` · 定位：${outlineTitle(state.pendingSourceHighlight.excerpt, 24)}`
         : "";
+    $("#doc-preview-panel").open = Boolean(highlight);
     $("#doc-preview-meta").textContent = `${doc.originalName} · ${unit?.label || "全文"} · ${documentView(doc.id)?.unitCountLabel || unitCountLabel(doc, units.length)}${highlight}`;
     renderDocOutline(doc, safeIndex);
     renderDocFrame(doc, unit, safeIndex);
+    renderMathIn(summaryTarget);
   }
 
   function documentUnits(doc) {
@@ -301,7 +450,7 @@
     const target = $("#doc-outline");
     const outline = documentView(doc.id)?.outline || buildDocOutline(doc);
     if (!Number(outline.units || 0)) {
-      target.textContent = doc.warning || "这份资料暂时没有可划分的页面。";
+      target.textContent = doc.warning || "暂无分页";
       target.className = "doc-outline empty-state";
       return;
     }
@@ -408,23 +557,49 @@
     return String(text || "").replace(/\s+/g, " ").trim();
   }
 
+  function conciseText(text, maxLength = 96) {
+    const cleaned = compactText(text);
+    if (!cleaned) return "";
+    if (hasMathDelimiter(cleaned)) return cleaned;
+    return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 1)}…` : cleaned;
+  }
+
+  function previewDigest(text) {
+    const cleaned = cleanEvidenceText(text);
+    if (cleaned) return conciseText(cleaned, 118);
+    return conciseText(text, 118);
+  }
+
   function normalizeEvidenceSource(item) {
     if (!item) return null;
-    if (item.source_ref) return normalizeEvidenceSource({ ...item.source_ref, excerpt: item.source_ref.excerpt || item.excerpt });
+    if (item.source_ref) {
+      return normalizeEvidenceSource({
+        ...item.source_ref,
+        documentId: item.source_ref.document_id || item.documentId || item.document_id,
+        docName: item.source_ref.file_name || item.docName || item.file_name,
+        label: item.source_ref.unit_label || item.label,
+        excerpt: item.source_ref.excerpt || item.excerpt,
+      });
+    }
     const ref = {
       document_id: item.document_id || item.documentId || "",
-      file_name: item.file_name || item.docName || "",
-      unit_index: item.unit_index,
+      file_name: item.file_name || item.fileName || item.docName || "",
+      unit_index: item.unit_index ?? item.unitIndex,
       unit_label: item.unit_label || item.label || "全文",
       locator_label: item.locator_label || item.anchor_label || item.label || "",
       anchor_label: item.anchor_label || "",
-      excerpt: item.excerpt || "",
+      anchor_text: item.anchor_text || item.anchorText || "",
+      locator_type: item.locator_type || item.locatorType || "",
+      page_number: item.page_number || item.pageNumber || "",
+      excerpt: item.excerpt || item.anchor_text || item.anchorText || "",
       confidence: item.confidence || item.locator_confidence || "",
     };
     if (!ref.document_id && ref.file_name) {
-      const doc = courseDocuments().find((candidate) => candidate.originalName === ref.file_name);
+      const doc = state.index.documentsByCourseAndName.get(courseDocumentNameKey(state.currentCourseId, ref.file_name));
       if (doc) ref.document_id = doc.id;
     }
+    const doc = sourceRefDocument(ref);
+    if (doc && !ref.file_name) ref.file_name = doc.originalName;
     return ref;
   }
 
@@ -432,15 +607,117 @@
     return ref?.anchor_label || ref?.locator_label || ref?.unit_label || ref?.label || "全文";
   }
 
+  function sourceRefDocument(ref) {
+    const docId = ref?.document_id || ref?.documentId;
+    const fileName = ref?.file_name || ref?.fileName || ref?.docName;
+    if (docId) {
+      const doc = state.index.documentsById.get(docId);
+      if (doc) return doc;
+    }
+    return fileName ? state.index.documentsByCourseAndName.get(courseDocumentNameKey(state.currentCourseId, fileName)) || null : null;
+  }
+
   function sourceRefUnitIndex(ref) {
     const rawIndex = ref?.unit_index ?? ref?.unitIndex;
     if (rawIndex !== undefined && rawIndex !== null && rawIndex !== "" && Number.isInteger(Number(rawIndex))) return Number(rawIndex);
-    const doc = courseDocuments().find((candidate) => candidate.id === ref?.document_id || candidate.originalName === ref?.file_name);
+    const doc = sourceRefDocument(ref);
     if (!doc) return 0;
     const units = documentUnits(doc);
-    const label = ref?.unit_label || ref?.label || "";
-    const index = units.findIndex((unit) => unit.label === label);
-    return index >= 0 ? index : 0;
+    const labels = [ref?.unit_label, ref?.label].map(compactText).filter(Boolean);
+    for (const label of labels) {
+      const exactIndex = units.findIndex((unit) => compactText(unit.label) === label);
+      if (exactIndex >= 0) return exactIndex;
+    }
+    const pageNumber = Number(ref?.page_number || ref?.pageNumber || 0);
+    if (pageNumber) {
+      const pageIndex = units.findIndex((unit, index) => unitPageNumber(unit, index) === pageNumber);
+      if (pageIndex >= 0) return pageIndex;
+    }
+    const locator = compactText(ref?.anchor_label || ref?.locator_label || "");
+    if (locator) {
+      const locatorIndex = units.findIndex((unit) => compactText(unit.label || "").includes(locator) || compactText(unit.text || "").includes(locator));
+      if (locatorIndex >= 0) return locatorIndex;
+    }
+    const excerpt = compactText(ref?.excerpt || ref?.anchor_text || "");
+    if (excerpt.length >= 12) {
+      const shortExcerpt = excerpt.slice(0, Math.min(48, excerpt.length));
+      const excerptIndex = units.findIndex((unit) => compactText(unit.text || "").includes(shortExcerpt));
+      if (excerptIndex >= 0) return excerptIndex;
+    }
+    return 0;
+  }
+
+  function sourceRefsFromDocumentIds(documentIds = []) {
+    return [...new Set(Array.isArray(documentIds) ? documentIds : [])]
+      .map((docId) => state.index.documentsById.get(docId))
+      .filter(Boolean)
+      .map((doc) => {
+        const firstUnit = documentUnits(doc)[0] || {};
+        return {
+          document_id: doc.id,
+          file_name: doc.originalName,
+          unit_index: 0,
+          unit_label: firstUnit.label || "全文",
+          locator_label: firstUnit.label || "全文",
+          excerpt: firstUnit.text || "",
+          confidence: "low",
+        };
+      });
+  }
+
+  function uniqueSourceRefs(refs = []) {
+    const seen = new Set();
+    return refs
+      .map(normalizeEvidenceSource)
+      .filter(Boolean)
+      .filter((ref) => {
+        const key = `${ref.document_id || ref.file_name}:${ref.unit_index ?? ""}:${sourceRefLabel(ref)}:${compactText(ref.excerpt).slice(0, 42)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }
+
+  function collectSourceRefs(item = {}) {
+    const refs = [
+      ...(item.sourceRefs || []),
+      ...(item.source_refs || []),
+      ...(item.sourceRef ? [item.sourceRef] : []),
+      ...(item.source_ref ? [item.source_ref] : []),
+      ...(item.evidence || []),
+      ...(item.sources || []),
+    ];
+    return uniqueSourceRefs([...refs, ...sourceRefsFromDocumentIds(item.sourceDocumentIds || item.source_document_ids || [])]);
+  }
+
+  function firstNavigableSource(refs = []) {
+    return uniqueSourceRefs(Array.isArray(refs) ? refs : [refs]).find((ref) => sourceRefDocument(ref)) || null;
+  }
+
+  function sourceRefDisplayText(ref) {
+    const doc = sourceRefDocument(ref);
+    const docName = ref?.file_name || doc?.originalName || "资料";
+    const label = sourceRefLabel(ref);
+    return label && label !== "全文" ? `${docName} / ${label}` : docName;
+  }
+
+  function renderSourceJumpButton(refs, options = {}) {
+    const ref = firstNavigableSource(Array.isArray(refs) ? refs : [refs]);
+    const fallbackLabel = options.fallbackLabel || options.label || "";
+    if (!ref) {
+      return fallbackLabel
+        ? `<span class="${escapeAttribute(options.fallbackClass || options.className || "source-jump-static")}"><i data-lucide="${escapeAttribute(options.icon || "map-pin")}"></i>${escapeHtml(fallbackLabel)}</span>`
+        : "";
+    }
+    const unitIndex = sourceRefUnitIndex(ref);
+    const label = options.label || sourceRefDisplayText(ref);
+    const sourceLabel = sourceRefLabel(ref);
+    const excerpt = cleanEvidenceText(ref.excerpt || ref.anchor_text || "");
+    return `<button class="source-ref-button ${escapeAttribute(options.className || "source-jump-chip")}" type="button" data-doc-id="${escapeAttribute(ref.document_id)}" data-unit-index="${unitIndex}" data-source-label="${escapeAttribute(sourceLabel)}" data-source-excerpt="${escapeAttribute(excerpt)}" title="跳到来源" aria-label="跳到来源：${escapeAttribute(sourceRefDisplayText(ref))}">
+      <i data-lucide="${escapeAttribute(options.icon || "map-pin")}"></i>
+      <span>${escapeHtml(label)}</span>
+      ${options.hideDetail ? "" : `<small>${escapeHtml(sourceLabel)}</small>`}
+    </button>`;
   }
 
   function renderSourceRefs(refs, limit = 2) {
@@ -463,9 +740,10 @@
 
   function renderSourceRef(ref) {
     const label = sourceRefLabel(ref);
-    const docName = ref.file_name || "资料";
+    const doc = sourceRefDocument(ref);
+    const docName = ref.file_name || doc?.originalName || "资料";
     const unitIndex = sourceRefUnitIndex(ref);
-    const canJump = Boolean(ref.document_id);
+    const canJump = Boolean(doc);
     const confidence = ref.confidence || ref.locator_confidence || "";
     const excerpt = cleanEvidenceText(ref.excerpt || ref.anchor_text || "");
     const confidenceChip =
@@ -475,7 +753,7 @@
           ? '<span class="source-confidence high">高置信</span>'
           : "";
     const control = canJump
-      ? `<button class="source-ref-button" type="button" data-doc-id="${escapeAttribute(ref.document_id)}" data-unit-index="${unitIndex}" data-source-excerpt="${escapeAttribute(excerpt)}" title="跳到来源">
+      ? `<button class="source-ref-button" type="button" data-doc-id="${escapeAttribute(doc.id)}" data-unit-index="${unitIndex}" data-source-label="${escapeAttribute(label)}" data-source-excerpt="${escapeAttribute(excerpt)}" title="跳到来源" aria-label="跳到来源：${escapeAttribute(docName)} ${escapeAttribute(label)}">
           <i data-lucide="map-pin"></i>
           <span>${escapeHtml(docName)}</span>
           <small>${escapeHtml(label)}</small>
@@ -483,19 +761,17 @@
       : `<span class="source-ref-static"><span>${escapeHtml(docName)}</span><small>${escapeHtml(label)}</small></span>`;
     return `<div class="source-ref">
       <div class="source-ref-head">${control}${confidenceChip}</div>
-      ${excerpt ? `<p>${renderTextWithInlineMath(excerpt)}</p>` : ""}
+      ${excerpt ? `<details class="source-excerpt"><summary>摘录</summary><p>${renderTextWithInlineMath(excerpt)}</p></details>` : ""}
     </div>`;
   }
 
   function jumpToSourceRef(ref) {
     const source = normalizeEvidenceSource(ref);
-    if (!source?.document_id) return false;
-    const doc = courseDocuments().find((item) => item.id === source.document_id);
+    if (!source) return false;
+    const doc = sourceRefDocument(source);
     if (!doc) return false;
-    state.activeTab = "documents";
-    $$(".tab-button").forEach((item) => item.classList.toggle("active", item.dataset.tab === "documents"));
-    $$(".view").forEach((view) => view.classList.remove("active-view"));
-    $("#view-documents").classList.add("active-view");
+    source.document_id = doc.id;
+    setActiveTab("documents", { renderIcons: false });
     const unitIndex = sourceRefUnitIndex(source);
     state.pendingSourceHighlight = {
       docId: doc.id,
@@ -505,7 +781,11 @@
     showPreview(doc, unitIndex);
     toast(`已定位到 ${sourceRefLabel(source)}`);
     window.requestAnimationFrame(() => {
-      $("#doc-preview")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const preview = $("#doc-preview");
+      preview?.scrollIntoView({ behavior: "smooth", block: "start" });
+      preview?.classList.remove("source-preview-flash");
+      void preview?.offsetWidth;
+      preview?.classList.add("source-preview-flash");
     });
     return true;
   }
@@ -514,28 +794,41 @@
     const list = $("#mistake-list");
     const mistakes = courseMistakes();
     if (!mistakes.length) {
-      list.innerHTML = '<article class="item-card"><p class="muted">刷题时点击“加入错题”，这里会形成考前复盘清单。</p></article>';
+      list.innerHTML = '<article class="item-card"><p class="muted">暂无错题。</p></article>';
       return;
     }
     list.innerHTML = mistakes
-      .map((mistake) => `<article class="item-card" data-mistake-id="${mistake.id}">
-        <div class="item-title-row">
-          <h4>${escapeHtml(mistake.question || "未命名错题")}</h4>
-          <div class="record-actions">
-            <label class="check-label">
-              <input type="checkbox" class="mastered-check" data-id="${mistake.id}" ${mistake.mastered ? "checked" : ""} />
-              已掌握
-            </label>
-            <button class="danger-icon-button delete-mistake" type="button" title="删除错题" aria-label="删除错题"><i data-lucide="trash-2"></i></button>
+      .map((mistake) => {
+        const sourceRefs = collectSourceRefs(mistake);
+        const sourceButton = renderSourceJumpButton(sourceRefs, {
+          className: "source-jump-chip",
+          label: "查看来源",
+          hideDetail: true,
+        });
+        return `<article class="item-card" data-mistake-id="${mistake.id}">
+          <div class="item-title-row">
+            <h4>${escapeHtml(mistake.question || "未命名错题")}</h4>
+            <div class="record-actions">
+              <label class="check-label">
+                <input type="checkbox" class="mastered-check" data-id="${mistake.id}" ${mistake.mastered ? "checked" : ""} />
+                已掌握
+              </label>
+              <button class="danger-icon-button delete-mistake" type="button" title="删除错题" aria-label="删除错题"><i data-lucide="trash-2"></i></button>
+            </div>
           </div>
-        </div>
-        <p><strong>我的答案：</strong>${escapeHtml(mistake.userAnswer || "未填写")}</p>
-        <p><strong>参考答案：</strong>${escapeHtml(mistake.answer || "")}</p>
-        ${mistake.explanation ? `<p><strong>解析：</strong>${escapeHtml(mistake.explanation)}</p>` : ""}
-        <div class="question-actions">
-          <button class="secondary-button similar-question" type="button"><i data-lucide="copy-plus"></i>生成同类题</button>
-        </div>
-      </article>`)
+          ${sourceButton ? `<div class="doc-meta">${sourceButton}</div>` : ""}
+          <details class="card-detail-toggle mistake-answer-toggle">
+            <summary>答案/解析</summary>
+            <p><strong>我的答案：</strong>${escapeHtml(mistake.userAnswer || "未填写")}</p>
+            <p><strong>参考答案：</strong>${escapeHtml(mistake.answer || "")}</p>
+            ${mistake.explanation ? `<p><strong>解析：</strong>${escapeHtml(mistake.explanation)}</p>` : ""}
+            ${sourceRefs.length ? `<div class="node-evidence">${renderSourceRefs(sourceRefs, 2)}</div>` : ""}
+          </details>
+          <div class="question-actions">
+            <button class="secondary-button similar-question" type="button"><i data-lucide="copy-plus"></i>生成同类题</button>
+          </div>
+        </article>`;
+      })
       .join("");
   }
 
@@ -555,7 +848,7 @@
 
     if (!plan) {
       nextTarget.className = "planner-next empty-state";
-      nextTarget.textContent = "生成计划后，这里会显示下一步该复盘的章节或专题。";
+      nextTarget.textContent = "生成后显示下一步。";
       grid.innerHTML = "";
       return;
     }
@@ -563,14 +856,23 @@
     const summary = plan.summary || {};
     const next = plan.nextReview;
     const diagnostic = plan.diagnosticTest;
+    const nextLocation = next?.chapterLocation
+      ? renderSourceJumpButton(collectSourceRefs(next), {
+          className: "next-location source-jump-chip",
+          fallbackClass: "next-location",
+          label: next.chapterLocation,
+          fallbackLabel: next.chapterLocation,
+          hideDetail: true,
+        })
+      : "";
     nextTarget.className = "planner-next";
     nextTarget.innerHTML = `<div>
         <span class="map-label">下一步</span>
         <h3>${escapeHtml(next?.title || "暂无待复盘主题")}</h3>
-        <p>${escapeHtml(next?.chapterTitle || "完成当前资料整理后再生成计划。")}</p>
-        ${next?.nextAction ? `<p class="next-action">${escapeHtml(next.nextAction)}</p>` : ""}
-        ${diagnostic ? `<p class="next-action">诊断：${escapeHtml(diagnostic.title)} · ${Number(diagnostic.estimated_time || 0)} 分钟 · ${Number(diagnostic.question_ids?.length || 0)} 题</p>` : ""}
-        ${next?.chapterLocation ? `<div class="next-location"><i data-lucide="map-pin"></i>${escapeHtml(next.chapterLocation)}</div>` : ""}
+        <p>${escapeHtml(conciseText(next?.chapterTitle || "整理资料后再生成计划。", 62))}</p>
+        ${next?.nextAction ? `<p class="next-action">${escapeHtml(conciseText(next.nextAction, 84))}</p>` : ""}
+        ${diagnostic ? `<p class="next-action">诊断：${escapeHtml(conciseText(diagnostic.title, 44))} · ${Number(diagnostic.estimated_time || 0)} 分钟 · ${Number(diagnostic.question_ids?.length || 0)} 题</p>` : ""}
+        ${nextLocation}
       </div>
       <div class="planner-stats">
         <span><strong>${Number(summary.documentCount || 0)}</strong>资料</span>
@@ -585,7 +887,7 @@
           .map((task) => `<li>
             <strong>${escapeHtml(task.title)}</strong>
             <span>${Number(task.minutes || 0)} 分钟</span>
-            <p>${escapeHtml(task.output || "")}</p>
+            <p>${escapeHtml(conciseText(task.output || "", 58))}</p>
           </li>`)
           .join("");
         return `<section class="day-plan">
@@ -599,6 +901,12 @@
         </section>`;
       })
       .join("");
+    const dayPlanPanel = daySections
+      ? `<details class="planner-day-panel card-detail-toggle">
+        <summary>每日安排</summary>
+        <div class="day-plan-grid">${daySections}</div>
+      </details>`
+      : "";
 
     const itemCards = (plan.items || [])
       .map((item, index) => {
@@ -614,11 +922,18 @@
           .map((entry) => `<li>${renderFormula(entry)}</li>`)
           .join("");
         const focusSteps = (item.focusSteps || [])
-          .slice(0, 4)
-          .map((entry) => `<li>${renderInlineText(entry)}</li>`)
+          .slice(0, 3)
+          .map((entry) => `<li>${renderInlineText(conciseText(entry, 70))}</li>`)
           .join("");
         const evidence = (item.evidence || [])
           .slice(0, 2);
+        const location = renderSourceJumpButton(collectSourceRefs(item), {
+          className: "plan-location source-jump-chip",
+          fallbackClass: "plan-location",
+          label: item.chapterLocation || "暂无资料定位",
+          fallbackLabel: item.chapterLocation || "暂无资料定位",
+          hideDetail: true,
+        });
         const completed = item.completedCount ? `<span class="chip good">已完成 ${Number(item.completedCount)}</span>` : "";
         const lastReview = item.lastCompletedAt ? `<span class="chip good">上次 ${formatDateTime(item.lastCompletedAt)}</span>` : "";
         const mistakeNote = item.totalMistakes
@@ -636,10 +951,10 @@
                 ${lastReview}
               </div>
               <h4>${escapeHtml(item.title)}</h4>
-              <p>${escapeHtml(item.chapterTitle || "")}</p>
+              <p>${escapeHtml(conciseText(item.chapterTitle || "", 54))}</p>
             </div>
           </div>
-          <div class="plan-location"><i data-lucide="map-pin"></i>${escapeHtml(item.chapterLocation || "暂无资料定位")}</div>
+          ${location}
           <div class="doc-meta">${reason}</div>
           ${concepts ? `<div class="concept-strip">${concepts}</div>` : ""}
           ${mistakeNote}
@@ -650,7 +965,7 @@
             </section>
             ${formulas ? `<section><strong>公式</strong><ul>${formulas}</ul></section>` : ""}
           </div>
-          ${evidence.length ? `<div class="node-evidence">${renderEvidenceItems(evidence)}</div>` : ""}
+          ${evidence.length ? `<details class="card-detail-toggle"><summary>来源</summary><div class="node-evidence">${renderEvidenceItems(evidence)}</div></details>` : ""}
           <div class="question-actions">
             <button class="primary-button complete-session" type="button"><i data-lucide="check-circle-2"></i>标记完成</button>
             <button class="danger-button delete-plan-item" type="button"><i data-lucide="trash-2"></i>删除</button>
@@ -658,7 +973,7 @@
         </article>`;
       })
       .join("");
-    grid.innerHTML = `${daySections}${itemCards}`;
+    grid.innerHTML = `${dayPlanPanel}${itemCards}`;
     renderMathIn(grid);
     iconRefresh();
   }
@@ -674,7 +989,7 @@
     }
     if (!pack) {
       target.className = "cram-output empty-state";
-      target.textContent = "生成后会按该科目资料、错题和复盘记录汇总出今天最该做的冲刺清单。";
+      target.textContent = "生成后显示冲刺清单。";
       return;
     }
 
@@ -685,7 +1000,7 @@
         <span>${String(index + 1).padStart(2, "0")}</span>
         <div>
           <strong>${escapeHtml(item.title)}</strong>
-          <p>${escapeHtml(item.detail || "")}</p>
+          <p>${escapeHtml(conciseText(item.detail || "", 64))}</p>
         </div>
         <em>${Number(item.minutes || 0)} 分钟</em>
       </li>`)
@@ -704,11 +1019,18 @@
     const focusCards = (pack.focusTopics || [])
       .map((topic, index) => {
         const reasons = (topic.reason || []).map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("");
-        const concepts = (topic.concepts || []).slice(0, 6).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
-        const formulas = (topic.formulas || []).slice(0, 3).map((item) => `<li>${renderFormula(item)}</li>`).join("");
-        const actions = (topic.actions || []).slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-        const pitfalls = (topic.pitfalls || []).slice(0, 3).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+        const concepts = (topic.concepts || []).slice(0, 4).map((item) => `<span>${escapeHtml(item)}</span>`).join("");
+        const formulas = (topic.formulas || []).slice(0, 2).map((item) => `<li>${renderFormula(item)}</li>`).join("");
+        const actions = (topic.actions || []).slice(0, 3).map((item) => `<li>${escapeHtml(conciseText(item, 72))}</li>`).join("");
+        const pitfalls = (topic.pitfalls || []).slice(0, 2).map((item) => `<li>${escapeHtml(conciseText(item, 72))}</li>`).join("");
         const evidence = renderEvidenceItems([...(topic.sourceRefs || []), ...(topic.evidence || [])], 3);
+        const location = renderSourceJumpButton(collectSourceRefs(topic), {
+          className: "plan-location source-jump-chip",
+          fallbackClass: "plan-location",
+          label: topic.sourceLocation || "暂无资料定位",
+          fallbackLabel: topic.sourceLocation || "暂无资料定位",
+          hideDetail: true,
+        });
         return `<article class="plan-card cram-topic-card" data-cram-topic-index="${index}">
           <div class="plan-card-head">
             <span class="node-icon"><i data-lucide="${index === 0 ? "flame" : "target"}"></i></span>
@@ -720,7 +1042,7 @@
                 ${topic.completedCount ? `<span class="chip good">已复盘 ${Number(topic.completedCount)}</span>` : ""}
               </div>
               <h4>${escapeHtml(topic.title || "综合复盘")}</h4>
-              <p>${escapeHtml(topic.sourceLocation || "暂无资料定位")}</p>
+              ${location}
             </div>
           </div>
           <div class="doc-meta">${reasons}</div>
@@ -730,7 +1052,7 @@
             ${formulas ? `<section><strong>公式入口</strong><ul>${formulas}</ul></section>` : ""}
           </div>
           ${pitfalls ? `<div class="cram-pitfall-box"><strong>易错检查</strong><ul>${pitfalls}</ul></div>` : ""}
-          ${evidence ? `<div class="source-ref-list">${evidence}</div>` : ""}
+          ${evidence ? `<details class="card-detail-toggle"><summary>来源</summary><div class="source-ref-list">${evidence}</div></details>` : ""}
           <div class="question-actions">
             <button class="primary-button complete-cram-session" type="button"><i data-lucide="check-circle-2"></i>标记完成</button>
           </div>
@@ -746,8 +1068,8 @@
         </div>
         <h4>${escapeHtml(formula.name || "公式")}</h4>
         <div class="cram-formula">${renderFormula(formula.expression || "")}</div>
-        <p>${escapeHtml(formula.conditions || "")}</p>
-        ${(formula.commonMisuses || []).length ? `<ul>${formula.commonMisuses.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+        ${formula.conditions ? `<p>${escapeHtml(conciseText(formula.conditions, 76))}</p>` : ""}
+        ${(formula.commonMisuses || []).length ? `<details class="card-detail-toggle"><summary>误用</summary><ul>${formula.commonMisuses.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details>` : ""}
         ${renderSourceRefs(formula.sourceRefs || [], 1)}
       </article>`)
       .join("");
@@ -759,35 +1081,47 @@
           <span class="chip ${item.source === "未掌握错题" ? "warn" : ""}">${escapeHtml(item.source || "易错")}</span>
           <span class="chip">${escapeHtml(item.topicTitle || "综合")}</span>
         </div>
-        <p>${escapeHtml(item.text || "")}</p>
+        <p>${escapeHtml(conciseText(item.text || "", 92))}</p>
         ${renderSourceRefs(item.sourceRefs || [], 1)}
       </article>`)
       .join("");
 
     const mistakeCards = (pack.mistakeQueue || [])
       .slice(0, 6)
-      .map((mistake) => `<article class="cram-mini-card">
-        <div class="question-meta">
-          <span class="chip ${mistake.mastered ? "good" : "warn"}">${mistake.mastered ? "已掌握" : "未掌握"}</span>
-          <span class="chip">${escapeHtml(mistake.topicTitle || "错题")}</span>
-        </div>
-        <h4>${escapeHtml(mistake.question || "错题")}</h4>
-        <p>${escapeHtml(mistake.reason || "")}</p>
-      </article>`)
+      .map((mistake) => {
+        const sourceButton = renderSourceJumpButton(collectSourceRefs(mistake), {
+          className: "source-jump-chip",
+          label: "来源",
+          hideDetail: true,
+        });
+        return `<article class="cram-mini-card">
+          <div class="question-meta">
+            <span class="chip ${mistake.mastered ? "good" : "warn"}">${mistake.mastered ? "已掌握" : "未掌握"}</span>
+            <span class="chip">${escapeHtml(mistake.topicTitle || "错题")}</span>
+          </div>
+          <h4>${escapeHtml(mistake.question || "错题")}</h4>
+          <p>${escapeHtml(conciseText(mistake.reason || "", 80))}</p>
+          ${sourceButton}
+        </article>`;
+      })
       .join("");
 
     const drillCards = (pack.drillQuestions || [])
       .slice(0, 6)
-      .map((question, index) => `<article class="cram-question" data-cram-question-index="${index}">
-        <div class="question-meta">
-          <span class="chip">第 ${index + 1} 题</span>
-          <span class="chip">${escapeHtml(typeLabel(question.question_type || question.type))}</span>
-          <span class="chip">${escapeHtml(question.difficulty || "medium")}</span>
-        </div>
-        <p>${renderInlineText(question.question_text || question.stem || "")}</p>
-        <button class="secondary-button show-cram-answer" type="button"><i data-lucide="book-open-check"></i>查看答案</button>
-        <div class="answer-panel">${renderRichParagraphs(question.answer || "暂无参考答案。")}</div>
-      </article>`)
+      .map((question, index) => {
+        const refs = renderSourceRefs(question.source_refs || question.sourceRefs || [], 1);
+        return `<article class="cram-question" data-cram-question-index="${index}">
+          <div class="question-meta">
+            <span class="chip">第 ${index + 1} 题</span>
+            <span class="chip">${escapeHtml(typeLabel(question.question_type || question.type))}</span>
+            <span class="chip">${escapeHtml(question.difficulty || "medium")}</span>
+          </div>
+          <p>${renderInlineText(question.question_text || question.stem || "")}</p>
+          ${refs ? `<details class="card-detail-toggle"><summary>来源</summary><div class="node-evidence">${refs}</div></details>` : ""}
+          <button class="secondary-button show-cram-answer" type="button"><i data-lucide="book-open-check"></i>查看答案</button>
+          <div class="answer-panel">${renderRichParagraphs(question.answer || "暂无参考答案。")}</div>
+        </article>`;
+      })
       .join("");
 
     const warnings = (pack.warnings || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
@@ -796,7 +1130,7 @@
       <div>
         <span class="map-label">考前冲刺包</span>
         <h3>${escapeHtml(pack.title || "考前冲刺包")}</h3>
-        <p>本次统计 ${Number(scope.documentCount || 0)} 份资料、${Number(scope.unitCount || 0)} 个片段、${Number(scope.mistakeCount || 0)} 条错题和 ${Number(scope.sessionCount || 0)} 条复盘记录。</p>
+        <p>${Number(scope.documentCount || 0)} 资料 · ${Number(scope.mistakeCount || 0)} 错题 · ${Number(scope.sessionCount || 0)} 复盘</p>
       </div>
       <div class="cram-stats">${statCards}</div>
     </section>
@@ -842,30 +1176,146 @@
   function renderSessionList(sessions) {
     const list = $("#session-list");
     if (!sessions.length) {
-      list.innerHTML = '<article class="item-card"><p class="muted">完成计划项后，这里会记录复盘历史。</p></article>';
+      list.innerHTML = '<article class="item-card"><p class="muted">暂无记录。</p></article>';
       return;
     }
     list.innerHTML = sessions
       .slice(0, 8)
-      .map((session) => `<article class="item-card session-card" data-session-id="${session.id}">
-        <div class="item-title-row">
-          <div>
-            <h4>${escapeHtml(session.topicTitle || "复盘记录")}</h4>
-            <p class="muted">${escapeHtml(session.chapterTitle || "未关联章节")}</p>
+      .map((session) => {
+        const sourceButton = renderSourceJumpButton(collectSourceRefs(session), {
+          className: "source-jump-chip",
+          label: "回到来源",
+          hideDetail: true,
+        });
+        return `<article class="item-card session-card" data-session-id="${session.id}">
+          <div class="item-title-row">
+            <div>
+              <h4>${escapeHtml(session.topicTitle || "复盘记录")}</h4>
+              <p class="muted">${escapeHtml(session.chapterTitle || "未关联章节")}</p>
+            </div>
+            <div class="record-actions">
+              <span class="chip good">${formatDateTime(session.completedAt || session.createdAt)}</span>
+              <button class="danger-icon-button delete-session" type="button" title="删除复盘记录" aria-label="删除复盘记录"><i data-lucide="trash-2"></i></button>
+            </div>
           </div>
-          <div class="record-actions">
-            <span class="chip good">${formatDateTime(session.completedAt || session.createdAt)}</span>
-            <button class="danger-icon-button delete-session" type="button" title="删除复盘记录" aria-label="删除复盘记录"><i data-lucide="trash-2"></i></button>
+          <div class="doc-meta">
+            <span class="chip">${Number(session.durationMinutes || 0)} 分钟</span>
+            <span class="chip">${(session.sourceDocumentIds || []).length} 资料</span>
+            <span class="chip">${(session.sourceMistakeIds || []).length} 错题</span>
+            ${sourceButton}
           </div>
-        </div>
-        <div class="doc-meta">
-          <span class="chip">${Number(session.durationMinutes || 0)} 分钟</span>
-          <span class="chip">${(session.sourceDocumentIds || []).length} 资料</span>
-          <span class="chip">${(session.sourceMistakeIds || []).length} 错题</span>
-        </div>
-        ${session.notes ? `<p>${escapeHtml(session.notes)}</p>` : ""}
-      </article>`)
+          ${session.notes ? `<p>${escapeHtml(session.notes)}</p>` : ""}
+        </article>`;
+      })
       .join("");
+  }
+
+  function renderSolver() {
+    const output = $("#solver-output");
+    const memoryList = $("#solver-memory-list");
+    const historyList = $("#solver-history-list");
+    if (!output || !memoryList || !historyList) return;
+    const solution = state.currentSolution?.courseId === state.currentCourseId ? state.currentSolution : null;
+    if (!solution) {
+      output.className = "markdown-output solver-output empty-state";
+      output.textContent = state.currentCourseId ? "生成后显示分步解答、关键公式和易错提醒。" : "先新建或选择科目。";
+    } else {
+      output.className = "markdown-output solver-output";
+      output.innerHTML = renderSolutionHtml(solution);
+      renderMathIn(output);
+    }
+    renderSolverMemoryList(memoryList);
+    renderSolverHistoryList(historyList);
+    iconRefresh();
+  }
+
+  function renderSolutionHtml(solution) {
+    const quality = solution.quality || {};
+    const knowns = (solution.knowns || []).map((item) => `<li>${renderInlineText(item)}</li>`).join("");
+    const concepts = (solution.relatedConcepts || []).slice(0, 8).map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("");
+    const formulas = (solution.formulaHints || []).slice(0, 6).map((item) => `<li>${renderInlineText(item)}</li>`).join("");
+    const steps = (solution.steps || []).map((step, index) => `<li>
+      <strong>${escapeHtml(step.title || `步骤 ${index + 1}`)}</strong>
+      <p>${renderInlineText(step.detail || "")}</p>
+      ${step.formula ? `<div class="cram-formula">${renderInlineText(step.formula)}</div>` : ""}
+    </li>`).join("");
+    const mistakes = (solution.commonMistakes || []).map((item) => `<li>${renderInlineText(item)}</li>`).join("");
+    const cards = (solution.reviewCards || []).map((card) => `<article class="solver-memory-card">
+      <span class="chip">${escapeHtml(card.type || "review")}</span>
+      <h4>${escapeHtml(card.title || "复习卡")}</h4>
+      <p>${renderInlineText(card.body || "")}</p>
+    </article>`).join("");
+    const sourceRefs = collectSourceRefs(solution);
+    const sourceButton = renderSourceJumpButton(sourceRefs, { className: "source-jump-chip", label: "回到来源", hideDetail: true });
+    const sourceList = renderSourceRefs(sourceRefs, 3);
+    return `<div class="solver-answer-head">
+      <div>
+        <span class="map-label">${escapeHtml(solution.provider === "api" ? "API 解答" : "本地解题框架")}</span>
+        <h3>${escapeHtml(solution.title || "题目解答")}</h3>
+        <div class="doc-meta">
+          <span class="chip">${escapeHtml(solution.subject || currentCourse()?.name || "当前科目")}</span>
+          <span class="chip ${quality.level === "strong" ? "good" : quality.level === "partial" ? "warn" : ""}">质量 ${Number(quality.score || 0)}</span>
+          ${sourceButton}
+        </div>
+      </div>
+    </div>
+    <section class="answer-section"><strong>题目</strong>${renderRichParagraphs(solution.question || "")}</section>
+    <section class="answer-section"><strong>题意与目标</strong>
+      ${knowns ? `<ul>${knowns}</ul>` : ""}
+      <p>${renderInlineText(solution.target || "按题目要求求解并说明理由")}</p>
+    </section>
+    ${concepts ? `<section class="answer-section"><strong>考点定位</strong><div class="doc-meta">${concepts}</div><p>${renderInlineText(solution.method || "")}</p></section>` : `<section class="answer-section"><strong>解题入口</strong><p>${renderInlineText(solution.method || "")}</p></section>`}
+    ${formulas ? `<section class="answer-section"><strong>关键公式</strong><ul>${formulas}</ul></section>` : ""}
+    <section class="answer-section"><strong>解题步骤</strong><ol>${steps}</ol></section>
+    <section class="answer-section"><strong>答案</strong>${renderRichParagraphs(solution.answer || "")}</section>
+    ${mistakes ? `<section class="answer-section"><strong>易错提醒</strong><ul>${mistakes}</ul></section>` : ""}
+    ${cards ? `<section class="answer-section solver-memory-preview"><strong>可固化记忆</strong><div class="solver-memory-grid">${cards}</div></section>` : ""}
+    ${solution.similarDrillPrompt ? `<section class="answer-section"><strong>同类题提示</strong>${renderRichParagraphs(solution.similarDrillPrompt)}</section>` : ""}
+    ${sourceList ? `<section class="answer-section answer-source"><strong>资料来源</strong><div class="node-evidence">${sourceList}</div></section>` : ""}`;
+  }
+
+  function renderSolverMemoryList(list) {
+    const solved = courseSolvedQuestions().filter((item) => item.memoryPinned !== false);
+    if (!solved.length) {
+      list.className = "item-list solver-list empty-state";
+      list.textContent = "暂无复习记忆。";
+      return;
+    }
+    list.className = "item-list solver-list";
+    list.innerHTML = solved.slice(0, 8).map((item) => {
+      const cards = (item.reviewCards || []).slice(0, 2).map((card) => `<li><strong>${escapeHtml(card.title || "")}</strong>${card.body ? `：${escapeHtml(conciseText(card.body, 64))}` : ""}</li>`).join("");
+      return `<article class="solver-mini-card" data-solved-id="${item.id}">
+        <div class="item-title-row">
+          <h4>${escapeHtml(item.title || "解题记忆")}</h4>
+          <button class="danger-icon-button delete-solved-question" type="button" title="删除记忆" aria-label="删除记忆"><i data-lucide="trash-2"></i></button>
+        </div>
+        <ul>${cards}</ul>
+        <div class="question-actions">
+          <button class="secondary-button reuse-solved-question" type="button"><i data-lucide="rotate-ccw"></i>调用</button>
+          <button class="secondary-button solved-to-quiz" type="button"><i data-lucide="copy-plus"></i>同类题</button>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  function renderSolverHistoryList(list) {
+    const solved = courseSolvedQuestions();
+    if (!solved.length) {
+      list.className = "item-list solver-list empty-state";
+      list.textContent = "暂无历史题目。";
+      return;
+    }
+    list.className = "item-list solver-list";
+    list.innerHTML = solved.slice(0, 10).map((item) => `<article class="solver-mini-card" data-solved-id="${item.id}">
+      <div class="item-title-row">
+        <h4>${escapeHtml(item.title || "历史题目")}</h4>
+        <span class="chip">${formatDateTime(item.createdAt)}</span>
+      </div>
+      <p>${escapeHtml(conciseText(item.question || "", 92))}</p>
+      <div class="question-actions">
+        <button class="secondary-button reuse-solved-question" type="button"><i data-lucide="book-open-check"></i>查看</button>
+      </div>
+    </article>`).join("");
   }
 
   function renderSettings() {
@@ -1466,7 +1916,7 @@
           <div class="visual-card-copy">
             <small>${escapeHtml(card.kind_label || "知识卡")}</small>
             <h4>${renderTextWithInlineMath(card.title || "知识卡片")}</h4>
-            ${formula || `<p>${renderTextWithInlineMath(card.summary || "")}</p>`}
+            ${formula || `<p>${renderTextWithInlineMath(conciseText(card.summary || "", 72))}</p>`}
             ${badges ? `<div class="visual-card-badges">${badges}</div>` : ""}
           </div>
         </article>`;
@@ -1480,7 +1930,7 @@
           <div>
             <small>${escapeHtml(item.label || "")}</small>
             <strong>${renderTextWithInlineMath(item.title || "")}</strong>
-            <p>${renderTextWithInlineMath(item.description || "")}</p>
+            <p>${renderTextWithInlineMath(conciseText(item.description || "", 58))}</p>
           </div>
         </li>`,
       )
@@ -1497,9 +1947,9 @@
     return `<section class="knowledge-visual">
       <div class="knowledge-visual-main">
         <div class="knowledge-hero-copy">
-          <span class="map-label">知识图片</span>
+          <span class="map-label">知识地图</span>
           <h3>${escapeHtml(plan.title || deck.title || map.course?.name || "当前科目")}</h3>
-          <p>${escapeHtml(plan.subtitle || "按考点、公式、题型和易错点生成复习视觉卡片。")}</p>
+          <p>${escapeHtml(conciseText(plan.subtitle || "考点、公式、题型、易错点", 64))}</p>
         </div>
         <div class="visual-lead-grid">${leadCards}</div>
       </div>
@@ -1563,8 +2013,15 @@
         </div>
       </div>
       ${primaryFormula}
-      ${card.summary ? `<div class="knowledge-card-summary"><span>核心</span><p>${renderTextWithInlineMath(card.summary)}</p></div>` : ""}
-      ${bodySections.length ? `<div class="knowledge-card-body">${bodySections.join("")}</div>` : ""}
+      ${card.summary ? `<div class="knowledge-card-summary"><span>核心</span><p>${renderTextWithInlineMath(conciseText(card.summary, 126))}</p></div>` : ""}
+      ${
+        bodySections.length
+          ? `<details class="knowledge-card-details card-detail-toggle">
+            <summary>细节</summary>
+            <div class="knowledge-card-body">${bodySections.join("")}</div>
+          </details>`
+          : ""
+      }
       ${
         refs
           ? `<details class="knowledge-card-source">
@@ -1651,7 +2108,7 @@
             <h4>${renderTextWithInlineMath(cleanDisplayTitle(node.label))}</h4>
           </div>
           ${formula ? `<div class="formula-display">${renderFormula(formula)}</div>` : ""}
-          ${summary ? `<p>${renderTextWithInlineMath(summary)}</p>` : ""}
+          ${summary ? `<p>${renderTextWithInlineMath(conciseText(summary, 96))}</p>` : ""}
           ${refs ? `<div class="node-evidence">${refs}</div>` : ""}
         </article>`;
       })
@@ -1786,7 +2243,13 @@
             </li>`,
           )
           .join("");
-        const refs = renderSourceRefs(q.source_refs || [], 2);
+        const questionRefs = questionSourceRefs(q);
+        const refs = renderSourceRefs(questionRefs, 2);
+        const sourceButton = renderSourceJumpButton(questionRefs, {
+          className: "source-jump-chip",
+          label: "来源",
+          hideDetail: true,
+        });
         const steps = (q.step_by_step_solution || [])
           .map((step) => `<li>${escapeHtml(step)}</li>`)
           .join("");
@@ -1808,7 +2271,7 @@
               <span class="chip">${escapeHtml(q.difficulty || "中等")}</span>
               <span class="chip">${Number(q.estimated_time || 5)} 分钟</span>
             </div>
-            ${tags ? `<div class="doc-meta">${tags}</div>` : ""}
+            ${tags || sourceButton ? `<div class="doc-meta">${tags}${sourceButton}</div>` : ""}
           </div>
           <div class="question-stem">${renderInlineText(q.question_text || q.stem || "")}</div>
           ${options ? `<ol class="question-options">${options}</ol>` : ""}
@@ -1926,8 +2389,13 @@
       ...new Set([
         ...(question?.sourceDocumentIds || []),
         ...((question?.source_refs || []).map((ref) => ref.document_id).filter(Boolean)),
+        ...((question?.sourceRefs || []).map((ref) => ref.document_id || ref.documentId).filter(Boolean)),
       ]),
     ];
+  }
+
+  function questionSourceRefs(question) {
+    return uniqueSourceRefs([...(question?.source_refs || []), ...(question?.sourceRefs || [])]);
   }
 
   function renderQuizQuality(evaluation) {
@@ -1935,7 +2403,7 @@
     if (!target) return;
     if (!evaluation) {
       target.className = "quality-panel empty-state";
-      target.textContent = "生成题目后显示质量评估。";
+      target.textContent = "生成后显示质量。";
       return;
     }
     const checks = evaluation.checks || {};
@@ -1960,15 +2428,15 @@
       <span class="${checks.duplicate_questions ? "ok" : "bad"}">重复检测</span>
       <span class="${checks.comprehensive_question ? "ok" : "bad"}">综合题</span>
     </div>
-    ${issues ? `<ul>${issues}</ul>` : ""}`;
+    ${issues ? `<details class="card-detail-toggle quality-issues"><summary>提示</summary><ul>${issues}</ul></details>` : ""}`;
   }
 
   async function generateReviewPlan() {
     if (!state.currentCourseId) return toast("请先选择科目");
-    $("#planner-status").textContent = "正在生成复习计划...";
+    $("#planner-status").textContent = "生成中...";
     const nextTarget = $("#planner-next");
     nextTarget.className = "planner-next loading-state";
-    nextTarget.textContent = "正在结合资料、错题和复盘记录排序...";
+    nextTarget.textContent = "正在排序...";
     try {
       const data = await api("/api/generate/plan", {
         method: "POST",
@@ -1985,7 +2453,7 @@
       state.currentCourseModel = data.courseModel || state.currentCourseModel;
       state.currentPlan = data.plan;
       renderPlanner();
-      $("#planner-status").textContent = "已按资料线索、错题和完成记录生成";
+      $("#planner-status").textContent = "已生成";
     } catch (error) {
       $("#planner-status").textContent = "";
       nextTarget.className = "planner-next empty-state";
@@ -1997,9 +2465,9 @@
   async function generateCramPackView() {
     if (!state.currentCourseId) return toast("请先选择科目");
     const target = $("#cram-output");
-    $("#cram-status").textContent = "正在统计资料、错题和复盘记录...";
+    $("#cram-status").textContent = "生成中...";
     target.className = "cram-output loading-state";
-    target.textContent = "正在按科目汇总资料信号，并计算考前优先级...";
+    target.textContent = "正在排序...";
     try {
       const data = await api("/api/generate/cram-pack", {
         method: "POST",
@@ -2013,13 +2481,93 @@
       state.currentCourseModel = data.courseModel || state.currentCourseModel;
       state.currentCramPack = data.cramPack;
       renderCramPack();
-      $("#cram-status").textContent = "已生成本地统计冲刺包";
+      $("#cram-status").textContent = "已生成";
     } catch (error) {
       $("#cram-status").textContent = "";
       target.className = "cram-output empty-state";
       target.textContent = "生成失败，请检查资料是否已导入并包含可抽取文本。";
       toast(error.message);
     }
+  }
+
+  async function generateSolutionView() {
+    if (!state.currentCourseId) return toast("请先选择科目");
+    const question = $("#solver-input")?.value.trim();
+    if (!question) return toast("请输入题目");
+    const output = $("#solver-output");
+    $("#solver-status").textContent = "生成中...";
+    output.className = "markdown-output solver-output loading-state";
+    output.textContent = "正在拆解题目...";
+    try {
+      const data = await api("/api/solve", {
+        method: "POST",
+        body: JSON.stringify({
+          courseId: state.currentCourseId,
+          documentIds: selectedDocumentIds(),
+          question,
+        }),
+      });
+      state.currentCourseModel = data.courseModel || state.currentCourseModel;
+      state.currentSolution = { ...(data.solution || {}), courseId: state.currentCourseId };
+      renderSolver();
+      $("#solver-status").textContent = data.warning
+        ? `已回退本地规则：${conciseText(data.warning, 48)}`
+        : data.provider === "api"
+          ? "API"
+          : "本地";
+    } catch (error) {
+      $("#solver-status").textContent = "";
+      output.className = "markdown-output solver-output empty-state";
+      output.textContent = "生成失败，请检查题目和资料。";
+      toast(error.message);
+    }
+  }
+
+  async function saveCurrentSolution() {
+    const solution = state.currentSolution?.courseId === state.currentCourseId ? state.currentSolution : null;
+    if (!solution) return toast("请先生成解答");
+    await api("/api/solved-questions", {
+      method: "POST",
+      body: JSON.stringify({
+        courseId: state.currentCourseId,
+        provider: solution.provider || "local",
+        solution,
+        memoryPinned: true,
+      }),
+    });
+    renderSolver();
+    toast("已固化到复习记忆");
+  }
+
+  function solvedQuestionById(id) {
+    return courseSolvedQuestions().find((item) => item.id === id) || null;
+  }
+
+  function useSolvedQuestionAsQuizSeed(item) {
+    const prompt = item.similarDrillPrompt || `基于原题“${item.question || item.title}”生成同类型训练题。`;
+    state.currentQuiz = [
+      {
+        id: `solved_drill_${item.id}`,
+        question_id: `solved_drill_${item.id}`,
+        question_type: "variant",
+        type: "calculation",
+        difficulty: "medium",
+        question_text: `同类题：${prompt}`,
+        stem: `同类题：${prompt}`,
+        answer: "按原题的考点入口和解题流程，改变条件后重新列式求解。",
+        explanation: item.method || "",
+        step_by_step_solution: (item.steps || []).map((step) => step.detail || step.title).filter(Boolean),
+        common_mistakes: item.commonMistakes || [],
+        sourceDocumentIds: item.sourceDocumentIds || [],
+        sourceRefs: item.sourceRefs || [],
+        tags: ["解题记忆", "同类题"],
+        estimated_time: 8,
+      },
+    ];
+    state.currentQuizEvaluation = null;
+    renderQuiz(state.currentQuiz);
+    setActiveTab("quiz");
+    $("#quiz-status").textContent = "已从解题记忆生成同类题提示";
   }
 
   async function completePlanSession(index, button) {
@@ -2039,6 +2587,7 @@
           chapterTitle: item.chapterTitle,
           durationMinutes: item.durationMinutes,
           sourceDocumentIds: item.sourceDocumentIds || [],
+          sourceRefs: collectSourceRefs(item),
           sourceMistakeIds: item.sourceMistakeIds || [],
         }),
       });
@@ -2086,6 +2635,7 @@
           chapterTitle: item.title,
           durationMinutes: item.durationMinutes,
           sourceDocumentIds: item.sourceDocumentIds || [],
+          sourceRefs: collectSourceRefs(item),
           sourceMistakeIds: item.sourceMistakeIds || [],
           notes: "来自考前冲刺包",
         }),
@@ -2124,6 +2674,7 @@
       state.previewUnitIndex = 0;
       state.currentPlan = null;
       state.currentCramPack = null;
+      state.currentSolution = null;
       input.value = "";
       render();
       toast("科目已创建");
@@ -2149,7 +2700,7 @@
       }
 
       if (event.target.closest(".delete-course")) {
-        const course = (state.data?.courses || []).find((item) => item.id === courseId);
+        const course = state.index.coursesById.get(courseId);
         if (!course) return;
         const docCount = courseDocuments(courseId).length;
         const mistakeCount = courseMistakes(courseId).length;
@@ -2167,6 +2718,7 @@
               state.previewUnitIndex = 0;
               state.currentPlan = null;
               state.currentCramPack = null;
+              state.currentSolution = null;
             }
             if (state.editingCourseId === courseId) state.editingCourseId = null;
             toast("科目已删除");
@@ -2184,6 +2736,7 @@
       state.previewUnitIndex = 0;
       state.currentPlan = null;
       state.currentCramPack = null;
+      state.currentSolution = null;
       render();
     });
 
@@ -2209,11 +2762,21 @@
 
     $$(".tab-button").forEach((button) => {
       button.addEventListener("click", () => {
-        state.activeTab = button.dataset.tab;
-        $$(".tab-button").forEach((item) => item.classList.toggle("active", item === button));
-        $$(".view").forEach((view) => view.classList.remove("active-view"));
-        $(`#view-${state.activeTab}`).classList.add("active-view");
-        iconRefresh();
+        setActiveTab(button.dataset.tab);
+      });
+      button.addEventListener("keydown", (event) => {
+        const tabs = $$(".tab-button");
+        const currentIndex = tabs.indexOf(button);
+        if (currentIndex < 0) return;
+        let nextIndex = currentIndex;
+        if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        const nextTab = tabs[nextIndex];
+        if (setActiveTab(nextTab.dataset.tab)) nextTab.focus();
       });
     });
 
@@ -2223,7 +2786,7 @@
       jumpToSourceRef({
         document_id: button.dataset.docId,
         unit_index: Number(button.dataset.unitIndex || 0),
-        locator_label: button.querySelector("small")?.textContent || "",
+        locator_label: button.dataset.sourceLabel || button.querySelector("small")?.textContent || "",
         excerpt: button.dataset.sourceExcerpt || "",
       });
       iconRefresh();
@@ -2231,7 +2794,7 @@
 
     $("#file-input").addEventListener("change", () => {
       const files = $("#file-input").files;
-      $("#upload-note").textContent = files.length ? `${files.length} 个文件已选择，点击导入资料。` : "资料按科目保存在本机项目目录，不会自动上传到外部服务。";
+      $("#upload-note").textContent = files.length ? `已选 ${files.length} 个文件` : "";
     });
 
     $("#upload-form").addEventListener("submit", async (event) => {
@@ -2239,22 +2802,30 @@
       if (!state.currentCourseId) return toast("请先新建或选择科目");
       const input = $("#file-input");
       if (!input.files.length) return toast("请选择要导入的文件");
-      const form = new FormData();
-      form.append("courseId", state.currentCourseId);
-      for (const file of input.files) form.append("files", file);
-      $("#upload-note").textContent = "正在解析资料，PDF 可能需要一点时间。";
-      const data = await api("/api/upload", { method: "POST", body: form });
-      for (const doc of data.imported || []) state.selectedDocumentIds.add(doc.id);
-      if (data.imported?.[0]) {
-        state.previewDocumentId = data.imported[0].id;
-        state.previewUnitIndex = 0;
-      }
-      state.currentPlan = null;
-      state.currentCramPack = null;
-      input.value = "";
-      $("#upload-note").textContent = "导入完成。";
-      render();
-      toast(`已导入 ${data.imported?.length || 0} 个文件`);
+      await withBusy(event.submitter || $('button[type="submit"]', event.currentTarget), async () => {
+        const form = new FormData();
+        form.append("courseId", state.currentCourseId);
+        for (const file of input.files) form.append("files", file);
+        $("#upload-note").textContent = "正在解析资料，PDF 可能需要一点时间。";
+        try {
+          const data = await api("/api/upload", { method: "POST", body: form });
+          for (const doc of data.imported || []) state.selectedDocumentIds.add(doc.id);
+          if (data.imported?.[0]) {
+            state.previewDocumentId = data.imported[0].id;
+            state.previewUnitIndex = 0;
+          }
+          state.currentPlan = null;
+          state.currentCramPack = null;
+          state.currentSolution = null;
+          input.value = "";
+          $("#upload-note").textContent = "导入完成。";
+          render();
+          toast(`已导入 ${data.imported?.length || 0} 个文件`);
+        } catch (error) {
+          $("#upload-note").textContent = "";
+          toast(error.message);
+        }
+      }, { busyHtml: '<i data-lucide="loader-circle"></i>导入中', label: "正在导入资料" });
     });
 
     $("#text-import-form").addEventListener("submit", async (event) => {
@@ -2284,6 +2855,7 @@
       textInput.value = "";
       $("#upload-note").textContent = "纯文字例题已导入。";
       state.currentCramPack = null;
+      state.currentSolution = null;
       render();
       toast("纯文字例题已导入");
     });
@@ -2296,9 +2868,11 @@
       else state.selectedDocumentIds.delete(card.dataset.docId);
       state.currentPlan = null;
       state.currentCramPack = null;
+      state.currentSolution = null;
       renderDocuments();
       renderPlanner();
       renderCramPack();
+      renderSolver();
       iconRefresh();
     });
 
@@ -2306,7 +2880,7 @@
       const id = event.target.closest("[data-doc-id]")?.dataset.docId;
       if (!id) return;
       if (event.target.closest(".preview-doc")) {
-        const doc = courseDocuments().find((item) => item.id === id);
+        const doc = state.index.documentsById.get(id);
         showPreview(doc);
       }
       if (event.target.closest(".edit-doc")) {
@@ -2320,7 +2894,7 @@
         iconRefresh();
       }
       if (event.target.closest(".delete-doc")) {
-        const doc = courseDocuments().find((item) => item.id === id);
+        const doc = state.index.documentsById.get(id);
         if (!doc || !window.confirm(`删除资料“${doc.originalName}”？此操作会同时删除本地上传文件。`)) return;
         const wasSelected = state.selectedDocumentIds.has(id);
         const wasEditing = state.editingDocumentId === id;
@@ -2336,8 +2910,10 @@
           .then(() => {
             state.currentPlan = null;
             state.currentCramPack = null;
+            state.currentSolution = null;
             renderPlanner();
             renderCramPack();
+            renderSolver();
             toast("资料已删除");
           })
           .catch((error) => {
@@ -2357,7 +2933,7 @@
       if (deleteButton) {
         const docId = deleteButton.dataset.docId;
         const unitIndex = Number(deleteButton.dataset.unitIndex);
-        const doc = courseDocuments().find((item) => item.id === docId);
+        const doc = state.index.documentsById.get(docId);
         const unit = documentUnits(doc)[unitIndex];
         if (!doc || !unit) return;
         const label = unit.label || `片段 ${unitIndex + 1}`;
@@ -2366,10 +2942,12 @@
         state.previewUnitIndex = Math.max(0, unitIndex - 1);
         state.currentPlan = null;
         state.currentCramPack = null;
+        state.currentSolution = null;
         try {
           await api(`/api/documents/${encodeURIComponent(docId)}/units/${unitIndex}`, { method: "DELETE" });
           renderPlanner();
           renderCramPack();
+          renderSolver();
           toast("片段已删除");
         } catch (error) {
           toast(error.message);
@@ -2379,7 +2957,7 @@
 
       const button = event.target.closest("[data-doc-id][data-unit-index]");
       if (!button) return;
-      const doc = courseDocuments().find((item) => item.id === button.dataset.docId);
+      const doc = state.index.documentsById.get(button.dataset.docId);
       if (!doc) return;
       showPreview(doc, Number(button.dataset.unitIndex));
       iconRefresh();
@@ -2390,7 +2968,7 @@
       if (!form) return;
       event.preventDefault();
       const id = form.dataset.docId;
-      const doc = courseDocuments().find((item) => item.id === id);
+      const doc = state.index.documentsById.get(id);
       if (!doc) return;
       const originalName = $(".doc-name-input", form).value.trim();
       const text = $(".doc-text-input", form).value;
@@ -2403,8 +2981,10 @@
         });
         state.currentPlan = null;
         state.currentCramPack = null;
+        state.currentSolution = null;
         renderPlanner();
         renderCramPack();
+        renderSolver();
         toast("资料已修改");
       } catch (error) {
         state.editingDocumentId = id;
@@ -2418,44 +2998,90 @@
       state.selectedDocumentIds = new Set(allSelected ? [] : docs.map((doc) => doc.id));
       state.currentPlan = null;
       state.currentCramPack = null;
+      state.currentSolution = null;
       renderDocuments();
       renderPlanner();
       renderCramPack();
+      renderSolver();
       iconRefresh();
     });
 
     $("#generate-summary").addEventListener("click", async () => {
       if (!state.currentCourseId) return toast("请先选择科目");
-      $("#summary-status").textContent = "正在生成知识地图...";
-      const mapTarget = $("#knowledge-map");
-      mapTarget.className = "knowledge-map loading-state";
-      mapTarget.textContent = "正在梳理概念、公式和题型关系...";
-      const output = $("#summary-output");
-      output.classList.remove("empty-state");
-      output.textContent = "";
-      try {
-        const data = await api("/api/generate/summary", {
-          method: "POST",
-          body: JSON.stringify({
-            courseId: state.currentCourseId,
-            documentIds: selectedDocumentIds(),
-          }),
-        });
-        state.currentCourseModel = data.courseModel || null;
-        state.currentMindMap = data.mindMap || null;
-        renderKnowledgeMap(data.mindMap || data.knowledgeMap);
-        renderMarkdown(output, data.warning ? `> ${data.warning}\n\n${data.markdown}` : data.markdown);
-        $("#summary-status").textContent = data.provider === "api" ? "由 API 生成" : "由本地规则生成";
-      } catch (error) {
-        $("#summary-status").textContent = "";
-        mapTarget.className = "knowledge-map empty-state";
-        mapTarget.textContent = "生成失败，请检查资料是否已导入。";
-        toast(error.message);
-      }
+      await withBusy($("#generate-summary"), async () => {
+        $("#summary-status").textContent = "生成中...";
+        const mapTarget = $("#knowledge-map");
+        mapTarget.className = "knowledge-map loading-state";
+        mapTarget.textContent = "正在梳理...";
+        const output = $("#summary-output");
+        output.classList.remove("empty-state");
+        output.textContent = "";
+        $("#summary-panel").open = false;
+        try {
+          const data = await api("/api/generate/summary", {
+            method: "POST",
+            body: JSON.stringify({
+              courseId: state.currentCourseId,
+              documentIds: selectedDocumentIds(),
+            }),
+          });
+          state.currentCourseModel = data.courseModel || null;
+          state.currentMindMap = data.mindMap || null;
+          renderKnowledgeMap(data.mindMap || data.knowledgeMap);
+          renderMarkdown(output, data.warning ? `> ${data.warning}\n\n${data.markdown}` : data.markdown);
+          $("#summary-status").textContent = data.provider === "api" ? "API" : "本地";
+        } catch (error) {
+          $("#summary-status").textContent = "";
+          mapTarget.className = "knowledge-map empty-state";
+          mapTarget.textContent = "生成失败，请检查资料是否已导入。";
+          toast(error.message);
+        }
+      }, { busyHtml: '<i data-lucide="loader-circle"></i>生成中', label: "正在生成知识图谱" });
     });
 
     $("#generate-plan").addEventListener("click", generateReviewPlan);
     $("#generate-cram").addEventListener("click", generateCramPackView);
+    $("#generate-solution").addEventListener("click", async () => {
+      await withBusy($("#generate-solution"), generateSolutionView, {
+        busyHtml: '<i data-lucide="loader-circle"></i>生成中',
+        label: "正在生成解答",
+      });
+    });
+    $("#save-solver-memory").addEventListener("click", async () => {
+      await withBusy($("#save-solver-memory"), saveCurrentSolution, {
+        busyHtml: '<i data-lucide="loader-circle"></i>保存中',
+        label: "正在固化记忆",
+      });
+    });
+
+    $("#view-solver").addEventListener("click", async (event) => {
+      const card = event.target.closest("[data-solved-id]");
+      if (!card) return;
+      const item = solvedQuestionById(card.dataset.solvedId);
+      if (!item) return;
+      if (event.target.closest(".delete-solved-question")) {
+        if (!window.confirm("删除这条解题记忆？")) return;
+        try {
+          await api(`/api/solved-questions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+          if (state.currentSolution?.id === item.id) state.currentSolution = null;
+          renderSolver();
+          toast("解题记忆已删除");
+        } catch (error) {
+          toast(error.message);
+        }
+        return;
+      }
+      if (event.target.closest(".solved-to-quiz")) {
+        useSolvedQuestionAsQuizSeed(item);
+        return;
+      }
+      if (event.target.closest(".reuse-solved-question")) {
+        state.currentSolution = item;
+        $("#solver-input").value = item.question || "";
+        renderSolver();
+        $("#solver-output").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
 
     $("#cram-output").addEventListener("click", (event) => {
       const answerButton = event.target.closest(".show-cram-answer");
@@ -2514,6 +3140,7 @@
         state.currentCramPack = null;
         renderPlanner();
         renderCramPack();
+        renderSolver();
         toast("复盘记录已删除");
       } catch (error) {
         toast(error.message);
@@ -2522,32 +3149,34 @@
 
     $("#generate-quiz").addEventListener("click", async () => {
       if (!state.currentCourseId) return toast("请先选择科目");
-      $("#quiz-status").textContent = "正在生成题目...";
-      const types = $$('input[name="quiz-type"]:checked').map((input) => input.value);
-      try {
-        const data = await api("/api/generate/quiz", {
-          method: "POST",
-          body: JSON.stringify({
-            courseId: state.currentCourseId,
-            documentIds: selectedDocumentIds(),
-            count: $("#quiz-count").value,
-            difficulty: $("#quiz-difficulty").value,
-            types,
-          }),
-        });
-        state.currentQuiz = data.questions || [];
-        state.currentQuizEvaluation = data.evaluation || null;
-        state.currentCourseModel = data.courseModel || state.currentCourseModel;
-        renderQuiz(state.currentQuiz);
-        $("#quiz-status").textContent = data.warning
-          ? `API 不可用，已回退本地规则：${data.warning}`
-          : data.provider === "api"
-            ? "由 API 生成"
-            : "由本地规则生成";
-      } catch (error) {
-        $("#quiz-status").textContent = "";
-        toast(error.message);
-      }
+      await withBusy($("#generate-quiz"), async () => {
+        $("#quiz-status").textContent = "生成中...";
+        const types = $$('input[name="quiz-type"]:checked').map((input) => input.value);
+        try {
+          const data = await api("/api/generate/quiz", {
+            method: "POST",
+            body: JSON.stringify({
+              courseId: state.currentCourseId,
+              documentIds: selectedDocumentIds(),
+              count: $("#quiz-count").value,
+              difficulty: $("#quiz-difficulty").value,
+              types,
+            }),
+          });
+          state.currentQuiz = data.questions || [];
+          state.currentQuizEvaluation = data.evaluation || null;
+          state.currentCourseModel = data.courseModel || state.currentCourseModel;
+          renderQuiz(state.currentQuiz);
+          $("#quiz-status").textContent = data.warning
+            ? `已回退本地规则：${conciseText(data.warning, 52)}`
+            : data.provider === "api"
+              ? "API"
+              : "本地";
+        } catch (error) {
+          $("#quiz-status").textContent = "";
+          toast(error.message);
+        }
+      }, { busyHtml: '<i data-lucide="loader-circle"></i>生成中', label: "正在生成题目" });
     });
 
     $("#quiz-list").addEventListener("click", async (event) => {
@@ -2587,6 +3216,7 @@
             answer: question.answer,
             explanation: question.explanation || (question.step_by_step_solution || []).join("\n"),
             sourceDocumentIds: questionSourceDocumentIds(question),
+            sourceRefs: questionSourceRefs(question),
             userAnswer: $(".user-answer", card).value,
           }),
         });
@@ -2594,6 +3224,7 @@
         state.currentCramPack = null;
         renderPlanner();
         renderCramPack();
+        renderSolver();
         toast("已加入错题本");
       }
     });
@@ -2604,7 +3235,7 @@
       if (!question) return toast("请输入问题");
       const output = $("#ask-output");
       output.classList.remove("empty-state");
-      output.textContent = "正在检索资料...";
+      output.textContent = "检索中...";
       try {
         const data = await api("/api/ask", {
           method: "POST",
@@ -2631,6 +3262,7 @@
       state.currentCramPack = null;
       renderPlanner();
       renderCramPack();
+      renderSolver();
       toast(input.checked ? "已标记掌握" : "已取消掌握标记");
     });
 
@@ -2647,6 +3279,7 @@
           state.currentCramPack = null;
           renderPlanner();
           renderCramPack();
+          renderSolver();
           toast("错题已删除");
         } catch (error) {
           toast(error.message);
@@ -2687,19 +3320,25 @@
 
     $("#settings-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const provider = $('input[name="provider"]:checked').value;
-      await api("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({
-          provider,
-          apiBaseUrl: $("#api-base-url").value,
-          model: $("#api-model").value,
-          apiKey: $("#api-key").value,
-          clearApiKey: $("#clear-api-key").checked,
-        }),
-      });
-      $("#api-key").value = "";
-      toast("设置已保存");
+      await withBusy(event.submitter || $('button[type="submit"]', event.currentTarget), async () => {
+        const provider = $('input[name="provider"]:checked').value;
+        try {
+          await api("/api/settings", {
+            method: "POST",
+            body: JSON.stringify({
+              provider,
+              apiBaseUrl: $("#api-base-url").value,
+              model: $("#api-model").value,
+              apiKey: $("#api-key").value,
+              clearApiKey: $("#clear-api-key").checked,
+            }),
+          });
+          $("#api-key").value = "";
+          toast("设置已保存");
+        } catch (error) {
+          toast(error.message);
+        }
+      }, { busyHtml: '<i data-lucide="loader-circle"></i>保存中', label: "正在保存设置" });
     });
   }
 
@@ -2737,7 +3376,7 @@
   async function boot() {
     bindEvents();
     const data = await api("/api/state");
-    state.data = data;
+    setStateData(data);
     keepValidCourse();
     render();
   }

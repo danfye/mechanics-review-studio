@@ -8,6 +8,7 @@ const {
   buildCourseKnowledgeModel,
   buildDocumentKnowledgeModel,
   extractProblemAnchors,
+  learningPackContext,
   LOCATOR_VERSION,
 } = require("./lib/core/knowledge-model.cjs");
 const { generateQuestionSet } = require("./lib/core/question-generator.cjs");
@@ -17,8 +18,13 @@ const { StudyPlanGenerator } = require("./lib/core/study-plan-generator.cjs");
 const { generateCramPack } = require("./lib/core/cram-pack-generator.cjs");
 const { toLatexFormula, wrapInlineFormula, latexFraction } = require("./lib/core/formula-format.cjs");
 const { verifyFormula } = require("./lib/core/formula-verifier.cjs");
+const {
+  localSolveQuestion,
+  normalizeApiQuestionList,
+  normalizeSolution,
+} = require("./lib/core/solution-generator.cjs");
 const serverHttp = require("./lib/server/http.cjs");
-const { createDbTemplate, createRepository } = require("./lib/server/repository.cjs");
+const { createRepository } = require("./lib/server/repository.cjs");
 const { createWorkspaceService } = require("./lib/server/workspace-service.cjs");
 const { createRuntimeRequire } = require("./lib/server/runtime-require.cjs");
 
@@ -32,6 +38,14 @@ const DB_PATH = path.join(DATA_DIR, "db.json");
 const runtimeRequire = createRuntimeRequire(ROOT);
 const repository = createRepository({ dataDir: DATA_DIR, uploadDir: UPLOAD_DIR, dbPath: DB_PATH });
 const workspaceService = createWorkspaceService({ buildDocumentKnowledgeModel });
+const { json, text, readJson } = serverHttp;
+const { ensureDataDirs, readDb, writeDb, storedUploadPath, deleteStoredDocumentFile } = repository;
+const { publicState, refreshDocumentKnowledge } = workspaceService;
+
+const API_CACHE_TTL_MS = 1000 * 60 * 10;
+const API_TIMEOUT_MS = 1000 * 45;
+const API_CACHE_LIMIT = 24;
+const apiResponseCache = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -530,80 +544,33 @@ function stableReviewId(parts) {
   return `review_${crypto.createHash("sha1").update(parts.filter(Boolean).join("|")).digest("hex").slice(0, 12)}`;
 }
 
-function json(res, status, payload) {
-  return serverHttp.json(res, status, payload);
-}
-
-function text(res, status, payload, contentType = "text/plain; charset=utf-8") {
-  return serverHttp.text(res, status, payload, contentType);
-}
-
-function getDbTemplate() {
-  return createDbTemplate();
-}
-
-async function ensureDataDirs() {
-  return repository.ensureDataDirs();
-}
-
-async function readDb() {
-  return repository.readDb();
-}
-
-async function writeDb(db) {
-  return repository.writeDb(db);
-}
-
-function storedUploadPath(storedName) {
-  return repository.storedUploadPath(storedName);
-}
-
-async function deleteStoredDocumentFile(doc) {
-  return repository.deleteStoredDocumentFile(doc);
-}
-
-function publicState(db) {
-  return workspaceService.publicState(db);
-}
-
-function needsDocumentKnowledgeRefresh(doc) {
-  return workspaceService.needsDocumentKnowledgeRefresh(doc);
-}
-
-function refreshDocumentKnowledge(doc) {
-  return workspaceService.refreshDocumentKnowledge(doc);
-}
-
 function courseKnowledgeModel(course, docs) {
   return buildCourseKnowledgeModel(course, docs);
 }
 
 function localStructuredSummary(courseModel, mindMap) {
   const stats = courseModel.stats || {};
-  const coreConcepts = selectSummaryConcepts(courseModel, 12);
-  const focusBlocks = buildSummaryFocusBlocks(courseModel, coreConcepts);
-  const pptKnowledgeSummary = buildPptKnowledgeSummary(courseModel, coreConcepts);
+  const index = buildCourseModelIndex(courseModel);
+  const coreConcepts = selectSummaryConcepts(courseModel, 12, index);
+  const focusBlocks = buildSummaryFocusBlocks(courseModel, coreConcepts, index);
+  const pptKnowledgeSummary = buildPptKnowledgeSummary(courseModel, coreConcepts, index);
   const chapters = (courseModel.chapters || [])
     .slice(0, 8)
     .map((chapter) => {
-      const concepts = (courseModel.concepts || [])
-        .filter((concept) => concept.chapter_id === chapter.chapter_id)
+      const chapterId = chapter.chapter_id;
+      const concepts = chapterItems(index.conceptsByChapter, chapterId)
         .map((concept) => concept.name)
         .slice(0, 5);
-      const formulas = (courseModel.formulas || [])
-        .filter((formula) => formula.chapter_id === chapter.chapter_id)
+      const formulas = chapterItems(index.formulasByChapter, chapterId)
         .map((formula) => wrapInlineFormula(formula.expression) || formula.expression)
         .slice(0, 3);
-      const mistakes = (courseModel.mistake_points || [])
-        .filter((mistake) => mistake.chapter_id === chapter.chapter_id)
+      const mistakes = chapterItems(index.mistakesByChapter, chapterId)
         .map((mistake) => mistake.description)
         .slice(0, 2);
       const displayTitle = summaryChapterTitle(chapter, {
         concepts,
         formulas,
-        problems: [...(courseModel.examples || []), ...(courseModel.homework_problems || [])]
-          .filter((problem) => problem.chapter_id === chapter.chapter_id)
-          .map((problem) => problem.title),
+        problems: chapterItems(index.problemsByChapter, chapterId).map((problem) => problem.title),
       });
       return `- ${displayTitle}（${chapter.difficulty} / ${chapter.exam_focus?.level || "low"}）\n  - 概念：${concepts.join("、") || "unknown"}\n  - 公式：${formulas.join("；") || "unknown"}\n  - 易错：${mistakes.join("；") || "unknown"}`;
     })
@@ -612,7 +579,7 @@ function localStructuredSummary(courseModel, mindMap) {
     .slice(0, 10)
     .map((formula) => `- ${formula.name}：${wrapInlineFormula(formula.expression) || formula.expression}；条件：${formula.applicable_conditions || "unknown"}`)
     .join("\n");
-  const examples = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])]
+  const examples = index.problems
     .slice(0, 8)
     .map((item) => {
       const ref = item.source_refs?.[0] || {};
@@ -663,26 +630,76 @@ ${mistakes || "- 暂未识别到明确易错点。"}
 - 对每个易错点做一题错误诊断，并写出防错检查清单。`;
 }
 
-function buildPptKnowledgeSummary(courseModel, coreConcepts = []) {
+function buildCourseModelIndex(courseModel = {}) {
+  const problems = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])];
+  return {
+    concepts: courseModel.concepts || [],
+    formulas: courseModel.formulas || [],
+    problems,
+    mistakes: courseModel.mistake_points || [],
+    conceptsByChapter: groupByKey(courseModel.concepts || [], (item) => item.chapter_id),
+    formulasByChapter: groupByKey(courseModel.formulas || [], (item) => item.chapter_id),
+    problemsByChapter: groupByKey(problems, (item) => item.chapter_id),
+    mistakesByChapter: groupByKey(courseModel.mistake_points || [], (item) => item.chapter_id),
+  };
+}
+
+function groupByKey(items = [], keyFn) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyFn(item);
+    const group = groups.get(key) || [];
+    group.push(item);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+function pushTopByScore(items, item, limit, scoreFn) {
+  const score = Number(scoreFn(item) || 0);
+  let index = 0;
+  while (index < items.length && Number(scoreFn(items[index]) || 0) >= score) index += 1;
+  if (index < limit) items.splice(index, 0, item);
+  if (items.length > limit) items.length = limit;
+}
+
+function chapterItems(groups, chapterId) {
+  return groups?.get(chapterId) || [];
+}
+
+function summaryScoredConcepts(courseModel, index = buildCourseModelIndex(courseModel)) {
+  if (!index.scoredConcepts) {
+    index.scoredConcepts = index.concepts.map((concept) => ({
+      ...concept,
+      summary_score: summaryConceptScore(concept, courseModel, index),
+    }));
+  }
+  return index.scoredConcepts;
+}
+
+function summaryScoredConceptsByChapter(courseModel, index = buildCourseModelIndex(courseModel)) {
+  if (!index.scoredConceptsByChapter) {
+    index.scoredConceptsByChapter = groupByKey(summaryScoredConcepts(courseModel, index), (concept) => concept.chapter_id);
+    for (const concepts of index.scoredConceptsByChapter.values()) {
+      concepts.sort((a, b) => Number(b.summary_score || 0) - Number(a.summary_score || 0));
+    }
+  }
+  return index.scoredConceptsByChapter;
+}
+
+function buildPptKnowledgeSummary(courseModel, coreConcepts = [], index = buildCourseModelIndex(courseModel)) {
   const coreNames = new Set(coreConcepts.map((concept) => concept.name));
+  const conceptsByChapter = summaryScoredConceptsByChapter(courseModel, index);
   return (courseModel.chapters || [])
     .map((chapter) => {
-      const chapterConcepts = (courseModel.concepts || [])
-        .filter((concept) => concept.chapter_id === chapter.chapter_id)
-        .map((concept) => ({
-          ...concept,
-          summary_score: concept.summary_score || summaryConceptScore(concept, courseModel),
-        }))
-        .sort((a, b) => Number(b.summary_score || 0) - Number(a.summary_score || 0));
+      const chapterConcepts = chapterItems(conceptsByChapter, chapter.chapter_id);
       const selectedConcepts = chapterConcepts
         .filter((concept) => coreNames.has(concept.name) || concept.candidate_confidence === "high" || Number(concept.summary_score || 0) >= 150)
         .slice(0, 4);
-      const formulas = (courseModel.formulas || []).filter((formula) => formula.chapter_id === chapter.chapter_id).slice(0, 3);
-      const problems = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])]
-        .filter((problem) => problem.chapter_id === chapter.chapter_id)
-        .slice(0, 2);
-      const mistakes = (courseModel.mistake_points || [])
-        .filter((mistake) => mistake.chapter_id === chapter.chapter_id)
+      const formulas = chapterItems(index.formulasByChapter, chapter.chapter_id).slice(0, 3);
+      const problems = chapterItems(index.problemsByChapter, chapter.chapter_id).slice(0, 2);
+      const mistakes = chapterItems(index.mistakesByChapter, chapter.chapter_id)
+        .slice()
         .sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0))
         .slice(0, 2);
       if (!selectedConcepts.length && !formulas.length && !problems.length && !mistakes.length) return "";
@@ -706,25 +723,21 @@ function buildPptKnowledgeSummary(courseModel, coreConcepts = []) {
     .join("\n");
 }
 
-function selectSummaryConcepts(courseModel, limit = 12) {
-  return [...(courseModel.concepts || [])]
-    .map((concept) => ({
-      ...concept,
-      summary_score: summaryConceptScore(concept, courseModel),
-    }))
+function selectSummaryConcepts(courseModel, limit = 12, index = buildCourseModelIndex(courseModel)) {
+  return summaryScoredConcepts(courseModel, index)
     .filter((concept) => concept.summary_score >= 120 || concept.candidate_confidence === "high")
     .sort((a, b) => b.summary_score - a.summary_score || String(a.name).localeCompare(String(b.name), "zh-Hans-CN"))
     .slice(0, limit);
 }
 
-function summaryConceptScore(concept, courseModel) {
+function summaryConceptScore(concept, courseModel, index = buildCourseModelIndex(courseModel)) {
   const chapterId = concept.chapter_id;
-  const relatedFormulaCount = (courseModel.formulas || []).filter((formula) => formula.chapter_id === chapterId && relatedTextMatch(concept.name, formula.name, formula.expression)).length;
-  const relatedProblemCount = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])].filter(
-    (problem) => problem.chapter_id === chapterId && ((problem.related_concepts || []).includes(concept.name) || relatedTextMatch(concept.name, problem.title, problem.problem_text)),
+  const relatedFormulaCount = chapterItems(index.formulasByChapter, chapterId).filter((formula) => relatedTextMatch(concept.name, formula.name, formula.expression)).length;
+  const relatedProblemCount = chapterItems(index.problemsByChapter, chapterId).filter(
+    (problem) => (problem.related_concepts || []).includes(concept.name) || relatedTextMatch(concept.name, problem.title, problem.problem_text),
   ).length;
-  const relatedMistakeCount = (courseModel.mistake_points || []).filter(
-    (mistake) => mistake.chapter_id === chapterId && ((mistake.related_concepts || []).includes(concept.name) || relatedTextMatch(concept.name, mistake.description)),
+  const relatedMistakeCount = chapterItems(index.mistakesByChapter, chapterId).filter(
+    (mistake) => (mistake.related_concepts || []).includes(concept.name) || relatedTextMatch(concept.name, mistake.description),
   ).length;
   return (
     Number(concept.importance_score || 0) +
@@ -766,16 +779,15 @@ function summarySelectionReasons(concept) {
   ]).slice(0, 4);
 }
 
-function buildSummaryFocusBlocks(courseModel, coreConcepts) {
+function buildSummaryFocusBlocks(courseModel, coreConcepts, index = buildCourseModelIndex(courseModel)) {
   const conceptNames = new Set(coreConcepts.map((concept) => concept.name));
+  const conceptsByChapter = summaryScoredConceptsByChapter(courseModel, index);
   return (courseModel.chapters || [])
     .map((chapter) => {
-      const concepts = (courseModel.concepts || []).filter((concept) => concept.chapter_id === chapter.chapter_id && conceptNames.has(concept.name));
-      const formulas = (courseModel.formulas || []).filter((formula) => formula.chapter_id === chapter.chapter_id).slice(0, 3);
-      const problems = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])]
-        .filter((problem) => problem.chapter_id === chapter.chapter_id)
-        .slice(0, 2);
-      const mistakes = (courseModel.mistake_points || []).filter((mistake) => mistake.chapter_id === chapter.chapter_id).slice(0, 2);
+      const concepts = chapterItems(conceptsByChapter, chapter.chapter_id).filter((concept) => conceptNames.has(concept.name));
+      const formulas = chapterItems(index.formulasByChapter, chapter.chapter_id).slice(0, 3);
+      const problems = chapterItems(index.problemsByChapter, chapter.chapter_id).slice(0, 2);
+      const mistakes = chapterItems(index.mistakesByChapter, chapter.chapter_id).slice(0, 2);
       const signalCount = concepts.length + formulas.length + problems.length + mistakes.length;
       if (!signalCount) return "";
       const displayTitle = summaryChapterTitle(chapter, {
@@ -822,10 +834,6 @@ async function readBody(req, maxBytes = 120 * 1024 * 1024) {
     }
     throw error;
   }
-}
-
-async function readJson(req) {
-  return serverHttp.readJson(req);
 }
 
 function parseMultipart(buffer, contentType) {
@@ -1435,6 +1443,48 @@ function clampText(value, maxLength = 92) {
   return textValue.length > maxLength ? `${textValue.slice(0, maxLength - 1)}…` : textValue;
 }
 
+function sanitizeSourceRefs(sourceRefs = [], validDocumentIds = null) {
+  const validIds = validDocumentIds ? new Set(validDocumentIds) : null;
+  return (Array.isArray(sourceRefs) ? sourceRefs : [])
+    .map((ref) => {
+      const documentId = String(ref?.document_id || ref?.documentId || "").trim();
+      if (!documentId || (validIds && !validIds.has(documentId))) return null;
+      const rawUnitIndex = ref?.unit_index ?? ref?.unitIndex;
+      const unitIndex =
+        rawUnitIndex !== undefined && rawUnitIndex !== null && rawUnitIndex !== "" && Number.isInteger(Number(rawUnitIndex))
+          ? Number(rawUnitIndex)
+          : undefined;
+      return {
+        document_id: documentId,
+        file_name: clampText(ref?.file_name || ref?.fileName || ref?.docName || "", 120),
+        unit_index: unitIndex,
+        unit_label: clampText(ref?.unit_label || ref?.unitLabel || ref?.label || "", 80),
+        locator_label: clampText(ref?.locator_label || ref?.locatorLabel || ref?.anchor_label || ref?.label || "", 80),
+        anchor_label: clampText(ref?.anchor_label || ref?.anchorLabel || "", 80),
+        locator_type: clampText(ref?.locator_type || ref?.locatorType || "", 40),
+        locator_confidence: clampText(ref?.locator_confidence || ref?.locatorConfidence || ref?.confidence || "", 24),
+        confidence: clampText(ref?.confidence || ref?.locator_confidence || "", 24),
+        excerpt: clampText(ref?.excerpt || ref?.anchor_text || ref?.anchorText || "", 260),
+        anchor_text: clampText(ref?.anchor_text || ref?.anchorText || ref?.excerpt || "", 260),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function uniqueSourceRefs(sourceRefs = []) {
+  const seen = new Set();
+  return (Array.isArray(sourceRefs) ? sourceRefs : [])
+    .filter((ref) => ref?.document_id || ref?.documentId)
+    .filter((ref) => {
+      const key = `${ref.document_id || ref.documentId}:${ref.unit_index ?? ref.unitIndex ?? ""}:${ref.anchor_label || ref.locator_label || ref.unit_label || ref.label || ""}:${String(ref.excerpt || ref.anchor_text || "").slice(0, 48)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
 function cleanStudyText(value) {
   return String(value || "")
     .replace(/TaoFM-\s*/gi, "")
@@ -1468,18 +1518,15 @@ function scoreSentence(sentence, keywords) {
 
 function getImportantSentences(textValue, keywords, limit = 14) {
   const seen = new Set();
-  return splitSentences(textValue)
-    .map((sentence) => ({ sentence, score: scoreSentence(sentence, keywords) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .map((item) => item.sentence)
-    .filter((sentence) => {
-      const key = sentence.slice(0, 40);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, limit);
+  const ranked = [];
+  for (const sentence of splitSentences(textValue)) {
+    const key = sentence.slice(0, 40);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const score = scoreSentence(sentence, keywords);
+    if (score > 0) pushTopByScore(ranked, { sentence, score }, limit, (item) => item.score);
+  }
+  return ranked.map((item) => item.sentence);
 }
 
 function getFormulaLines(textValue, limit = 12) {
@@ -1571,8 +1618,7 @@ function topicScore(sourceText, topic) {
   return count;
 }
 
-function topicFormulaLines(sourceText, topic, limit = 4) {
-  const formulaLines = getFormulaLines(sourceText, 30);
+function topicFormulaLines(sourceText, topic, limit = 4, formulaLines = getFormulaLines(sourceText, 30)) {
   const topicWords = topic.concepts
     .join(" ")
     .match(/[\p{L}\p{N}_]+|[σσετγθφωΩμνΔδψ]/gu) || [];
@@ -1622,15 +1668,18 @@ function markdownInlineFormulas(value) {
 function buildKnowledgeMap(course, docs) {
   const sourceText = docs.map((doc) => doc.text).join("\n\n");
   const title = course?.name || "当前科目";
+  const sourceFormulaLines = getFormulaLines(sourceText, 30);
   let courseModel = null;
+  let modelIndex = null;
   try {
     courseModel = courseKnowledgeModel(course, docs);
+    modelIndex = buildCourseModelIndex(courseModel);
   } catch {
     courseModel = null;
   }
-  const selectedConcepts = courseModel ? selectSummaryConcepts(courseModel, 18) : [];
+  const selectedConcepts = courseModel ? selectSummaryConcepts(courseModel, 18, modelIndex) : [];
   const keywords = selectedConcepts.length ? selectedConcepts.map((concept) => concept.name) : extractKeywords(sourceText, 32);
-  const structuredTopics = courseModel ? structuredMapTopics(courseModel, selectedConcepts) : [];
+  const structuredTopics = courseModel ? structuredMapTopics(courseModel, selectedConcepts, modelIndex) : [];
   const activeTopics = TOPIC_DEFINITIONS
     .map((topic) => ({
       ...topic,
@@ -1658,7 +1707,7 @@ function buildKnowledgeMap(course, docs) {
     tone: topic.tone,
     score: topic.score,
     concepts: topic.concepts.filter((concept) => sourceText.includes(concept.replace(/\s.*$/, "")) || topic.pattern.test(sourceText)).slice(0, 6),
-    formulas: topicFormulaLines(sourceText, topic, 4),
+    formulas: topicFormulaLines(sourceText, topic, 4, sourceFormulaLines),
     checks: topic.checks.slice(0, 3),
     evidence: topic.evidence,
   }));
@@ -1705,15 +1754,16 @@ function buildKnowledgeMap(course, docs) {
   };
 }
 
-function structuredMapTopics(courseModel, selectedConcepts = []) {
+function structuredMapTopics(courseModel, selectedConcepts = [], modelIndex = buildCourseModelIndex(courseModel)) {
+  const scoredByChapter = summaryScoredConceptsByChapter(courseModel, modelIndex);
   const selectedNames = new Set(selectedConcepts.map((concept) => concept.name));
   return (courseModel.chapters || [])
-    .map((chapter, index) => {
-      const concepts = (courseModel.concepts || []).filter((concept) => concept.chapter_id === chapter.chapter_id);
+    .map((chapter, chapterIndex) => {
+      const concepts = chapterItems(scoredByChapter, chapter.chapter_id);
       const selected = concepts.filter((concept) => selectedNames.has(concept.name));
-      const formulas = (courseModel.formulas || []).filter((formula) => formula.chapter_id === chapter.chapter_id);
-      const problems = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])].filter((problem) => problem.chapter_id === chapter.chapter_id);
-      const mistakes = (courseModel.mistake_points || []).filter((mistake) => mistake.chapter_id === chapter.chapter_id);
+      const formulas = chapterItems(modelIndex.formulasByChapter, chapter.chapter_id);
+      const problems = chapterItems(modelIndex.problemsByChapter, chapter.chapter_id);
+      const mistakes = chapterItems(modelIndex.mistakesByChapter, chapter.chapter_id);
       const signalCount = selected.length + formulas.length + problems.length + mistakes.length;
       if (!signalCount) return null;
       const title = summaryChapterTitle(chapter, {
@@ -1722,10 +1772,10 @@ function structuredMapTopics(courseModel, selectedConcepts = []) {
         problems: problems.map((problem) => problem.title),
       });
       return {
-        id: chapter.chapter_id || `chapter_${index}`,
+        id: chapter.chapter_id || `chapter_${chapterIndex}`,
         title,
         icon: chapter.exam_focus?.level === "high" ? "target" : "book-open-check",
-        tone: ["teal", "blue", "amber", "green", "rose", "violet"][index % 6],
+        tone: ["teal", "blue", "amber", "green", "rose", "violet"][chapterIndex % 6],
         score: Math.round(
           Number(chapter.exam_focus?.score || 0) +
             selected.reduce((sum, concept) => sum + Number(concept.summary_score || concept.importance_score || 0), 0) / 20 +
@@ -2035,6 +2085,7 @@ function mergeReviewBucket(target, incoming) {
   target.formulas = uniqueStrings([...(target.formulas || []), ...(incoming.formulas || [])]);
   target.checks = uniqueStrings([...(target.checks || []), ...(incoming.checks || [])]);
   target.evidence = [...(target.evidence || []), ...(incoming.evidence || [])].slice(0, 4);
+  target.sourceRefs = [...(target.sourceRefs || []), ...(incoming.sourceRefs || [])].slice(0, 6);
   target.sourceDocumentIds = uniqueStrings([...(target.sourceDocumentIds || []), ...(incoming.sourceDocumentIds || [])]);
   target.sourceText = `${target.sourceText || ""}\n\n${incoming.sourceText || ""}`.trim();
   return target;
@@ -2070,6 +2121,7 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
         formulas: topic.formulas || definition?.formulas || [],
         checks: topic.checks || definition?.checks || [],
         evidence: topic.evidence || [],
+        sourceRefs: topic.sourceRefs || topic.source_refs || [],
         mistakes: [],
         sourceDocumentIds: topic.sourceDocumentIds || [],
         sourceText: topic.sourceText || "",
@@ -2210,6 +2262,7 @@ function attachMistakeToBucket(bucket, mistake, selectedDocumentIds) {
     ...(bucket.sourceDocumentIds || []),
     ...(mistake.sourceDocumentIds || []).filter((docId) => selectedDocumentIds.has(docId)),
   ]);
+  bucket.sourceRefs = [...(bucket.sourceRefs || []), ...(mistake.sourceRefs || mistake.source_refs || [])].slice(0, 6);
   bucket.sourceMistakeIds = uniqueStrings([...(bucket.sourceMistakeIds || []), mistake.id]);
 }
 
@@ -2275,6 +2328,12 @@ function decorateReviewPlanItem(bucket, docs, sessions, today) {
   const chapter = inferChapterForTopic(bucket, docs);
   const sourceDocumentIds = bucket.sourceDocumentIds?.length ? bucket.sourceDocumentIds : docs.map((doc) => doc.id);
   const focusSteps = buildFocusSteps(bucket, unmasteredMistakes);
+  const evidence = (bucket.evidence || []).slice(0, 2);
+  const sourceRefs = uniqueSourceRefs([
+    ...(bucket.sourceRefs || []),
+    ...evidence.map((item) => item.source_ref).filter(Boolean),
+    ...bucket.mistakes.flatMap((mistake) => mistake.sourceRefs || mistake.source_refs || []),
+  ]);
   return {
     id: bucket.id,
     title: bucket.title,
@@ -2298,7 +2357,8 @@ function decorateReviewPlanItem(bucket, docs, sessions, today) {
     checks: (bucket.checks || []).slice(0, 3),
     focusSteps,
     nextAction: focusSteps[0] || "用一题完整复盘定义、公式、适用条件和检查点。",
-    evidence: (bucket.evidence || []).slice(0, 2),
+    evidence,
+    sourceRefs,
     sourceDocumentIds: [...new Set(sourceDocumentIds)],
     sourceMistakeIds: [...new Set([...(bucket.sourceMistakeIds || []), ...bucket.mistakes.map((mistake) => mistake.id)])],
   };
@@ -2653,15 +2713,137 @@ function localSimilarQuestions(mistake, docs, count = 4) {
     }));
 }
 
+function apiCourseLabel(course = {}) {
+  return `${course?.name || "当前科目"} STEM 期末复习`;
+}
+
+function compactSourceRef(ref = {}) {
+  const label = sourceRefDisplayLabel(ref);
+  const parts = [ref.file_name, label, ref.excerpt || ref.anchor_text].filter(Boolean);
+  return clampText(parts.join(" / "), 150);
+}
+
+function formatApiBullet(value, maxLength = 110) {
+  return `- ${clampText(markdownInlineFormulas(value), maxLength)}`;
+}
+
+function buildApiStudyContext(courseModel = {}, docs = [], options = {}) {
+  const index = buildCourseModelIndex(courseModel);
+  const coreConcepts = selectSummaryConcepts(courseModel, options.conceptLimit || 14, index);
+  const chapterLimit = options.chapterLimit || 8;
+  const formulaLimit = options.formulaLimit || 12;
+  const problemLimit = options.problemLimit || 10;
+  const mistakeLimit = options.mistakeLimit || 8;
+  const sourceRefLimit = options.sourceRefLimit || 10;
+  const chapters = (courseModel.chapters || []).slice(0, chapterLimit).map((chapter) => {
+    const chapterId = chapter.chapter_id;
+    const concepts = chapterItems(index.conceptsByChapter, chapterId)
+      .sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0))
+      .slice(0, 4)
+      .map((concept) => concept.name);
+    const formulas = chapterItems(index.formulasByChapter, chapterId)
+      .slice(0, 3)
+      .map((formula) => `${formula.name || "公式"} ${wrapInlineFormula(formula.expression) || formula.expression}`);
+    const problems = chapterItems(index.problemsByChapter, chapterId)
+      .slice(0, 2)
+      .map((problem) => problem.title);
+    return [
+      `### ${summaryChapterTitle(chapter, { concepts, formulas, problems })}`,
+      concepts.length ? `概念：${concepts.join("、")}` : "",
+      formulas.length ? `公式：${formulas.join("；")}` : "",
+      problems.length ? `题型：${problems.join("；")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  const formulas = (courseModel.formulas || [])
+    .slice(0, formulaLimit)
+    .map((formula) => `${formula.name || "公式"}：${wrapInlineFormula(formula.expression) || formula.expression}；条件：${formula.applicable_conditions || "从题设判断适用范围"}`);
+  const problems = index.problems.slice(0, problemLimit).map((problem) => {
+    const ref = compactSourceRef(problem.source_refs?.[0] || {});
+    return `${problem.title || "题型"}：${clampText(problem.problem_text || problem.title || "", 120)}${ref ? `（来源：${ref}）` : ""}`;
+  });
+  const mistakes = (courseModel.mistake_points || [])
+    .slice(0, mistakeLimit)
+    .map((mistake) => `${mistake.description}${mistake.related_concepts?.length ? `；关联：${mistake.related_concepts.slice(0, 3).join("、")}` : ""}`);
+  const sourceRefs = uniqueSourceRefs([
+    ...coreConcepts.flatMap((item) => item.source_refs || []),
+    ...(courseModel.formulas || []).flatMap((item) => item.source_refs || []),
+    ...index.problems.flatMap((item) => item.source_refs || []),
+    ...(courseModel.mistake_points || []).flatMap((item) => item.source_refs || []),
+  ])
+    .slice(0, sourceRefLimit)
+    .map(compactSourceRef)
+    .filter(Boolean);
+  const docStats = docs.map((doc) => `${doc.originalName || doc.id}: ${(doc.units || []).length || 1} 个片段`).slice(0, 8);
+  const packContext = courseModel.learning_pack
+    ? learningPackContext(courseModel.learning_pack, {
+        conceptLimit: Math.min(10, options.conceptLimit || 10),
+        formulaLimit: Math.min(8, options.formulaLimit || 8),
+        problemLimit: Math.min(8, options.problemLimit || 8),
+        pitfallLimit: Math.min(8, options.mistakeLimit || 8),
+        drillLimit: 8,
+      })
+    : "";
+  return [
+    `课程：${apiCourseLabel(courseModel.course)}`,
+    `资料规模：${docStats.join("；") || "未统计"}。只使用下列高价值结构化证据，不要复述无关原文。`,
+    packContext,
+    `## 核心考点\n${coreConcepts.map((concept) => formatApiBullet(`${concept.name}：${concept.description || concept.source_refs?.[0]?.excerpt || "按定义、条件、题型入口复习"}`)).join("\n") || "- 暂无"}`,
+    `## 章节压缩\n${chapters.join("\n\n") || "- 暂无"}`,
+    `## 公式与条件\n${formulas.map((item) => formatApiBullet(item, 150)).join("\n") || "- 暂无"}`,
+    `## 例题/作业题型\n${problems.map((item) => formatApiBullet(item, 170)).join("\n") || "- 暂无"}`,
+    `## 易错点\n${mistakes.map((item) => formatApiBullet(item, 140)).join("\n") || "- 暂无"}`,
+    `## 可追溯来源\n${sourceRefs.map((item) => formatApiBullet(item, 150)).join("\n") || "- 暂无"}`,
+  ].join("\n\n");
+}
+
+function buildApiQuestionSeedContext(courseModel = {}, localQuestions = [], options = {}) {
+  const seeds = localQuestions.slice(0, options.limit || 12).map((question, indexValue) => {
+    const refs = (question.sourceRefs || question.source_refs || [])
+      .concat((question.sourceDocumentIds || []).map((documentId) => ({ document_id: documentId })))
+      .slice(0, 2)
+      .map(compactSourceRef)
+      .filter(Boolean);
+    return [
+      `${indexValue + 1}. type=${question.type || "short"} difficulty=${question.difficulty || "中等"}`,
+      `题干：${clampText(question.stem || question.question_text || "", 180)}`,
+      `答案：${clampText(question.answer || "", 120)}`,
+      question.explanation ? `解析要点：${clampText(question.explanation, 140)}` : "",
+      refs.length ? `来源：${refs.join("；")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  const formulaHints = (courseModel.formulas || [])
+    .slice(0, 8)
+    .map((formula) => `${formula.name || "公式"} ${wrapInlineFormula(formula.expression) || formula.expression}`)
+    .join("；");
+  return [`## 本地候选题骨架\n${seeds.join("\n\n") || "暂无"}`, formulaHints ? `## 优先覆盖公式\n${formulaHints}` : ""].filter(Boolean).join("\n\n");
+}
+
+function buildApiMistakeContext(courseModel = {}, mistake = {}, docs = []) {
+  const relatedUnits = retrieveContext(docs, [mistake.question, mistake.answer, mistake.explanation].filter(Boolean).join("\n"), 6)
+    .filter((item) => item.score > 0)
+    .map((item) => `- ${item.doc.originalName} / ${item.label}：${clampText(item.text, 180)}`);
+  const concepts = selectSummaryConcepts(courseModel, 8).map((concept) => concept.name).join("、");
+  return [
+    `错题：${clampText(mistake.question, 420)}`,
+    `参考答案：${clampText(mistake.answer, 260)}`,
+    `解析/错因：${clampText(mistake.explanation || "无", 260)}`,
+    concepts ? `相关考点：${concepts}` : "",
+    relatedUnits.length ? `相关资料片段：\n${relatedUnits.join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function apiSimilarQuestions(db, course, mistake, docs, count) {
+  const courseModel = courseKnowledgeModel(course || { name: "错题变式" }, docs);
+  const localSeeds = localSimilarQuestions(mistake, docs, Math.max(count + 2, 6));
   const context = truncateForModel(
-    [
-      `错题：${mistake.question}`,
-      `参考答案：${mistake.answer}`,
-      `解析：${mistake.explanation || "无"}`,
-      docs.map((doc) => `# 文件：${doc.originalName}\n${doc.text}`).join("\n\n"),
-    ].join("\n\n"),
-    45000,
+    [buildApiMistakeContext(courseModel, mistake, docs), buildApiQuestionSeedContext(courseModel, localSeeds, { limit: 8 })].join("\n\n"),
+    16000,
   );
   const content = await callChatApi(
     db.settings,
@@ -2669,11 +2851,11 @@ async function apiSimilarQuestions(db, course, mistake, docs, count) {
       {
         role: "system",
         content:
-          '你是力学专业期末命题助教。根据错题生成同类型变式题。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。',
+          '你是 STEM 期末命题助教。根据错题生成同类型变式题。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目必须服务于考前复习，避免空泛概念题。',
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n题目数量：${count}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。\n\n${context}`,
+        content: `科目：${course?.name || "未命名科目"}\n题目数量：${count}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。请保留同类题的解题入口，但更换数字、条件或问法。\n\n${context}`,
       },
     ],
     { type: "json_object" },
@@ -2681,15 +2863,11 @@ async function apiSimilarQuestions(db, course, mistake, docs, count) {
   const parsed = parseJsonFromModel(content);
   const list = Array.isArray(parsed) ? parsed : parsed.questions;
   if (!Array.isArray(list)) throw new Error("API 返回的同类题 JSON 格式不符合预期。");
-  return list.slice(0, count).map((item) => ({
-    id: id("q"),
-    type: item.type || "short",
-    difficulty: item.difficulty || "中等",
-    stem: item.stem || "",
-    options: Array.isArray(item.options) ? item.options : [],
-    answer: item.answer || "",
-    explanation: item.explanation || "",
-    sourceDocumentIds: docs.map((doc) => doc.id),
+  return normalizeApiQuestionList(list, localSeeds, { count }).map((question) => ({
+    ...question,
+    id: question.id || id("q"),
+    question_id: question.question_id || question.id || id("q"),
+    sourceDocumentIds: question.sourceDocumentIds?.length ? question.sourceDocumentIds : docs.map((doc) => doc.id),
     sourceMistakeId: mistake.id,
   }));
 }
@@ -2705,56 +2883,102 @@ function truncateForModel(textValue, maxChars = 70000) {
   return `${textValue.slice(0, Math.floor(maxChars * 0.7))}\n\n[中间内容已截断]\n\n${textValue.slice(-Math.floor(maxChars * 0.3))}`;
 }
 
-async function callChatApi(settings, messages, responseFormat) {
+function apiCacheKey(settings, messages, responseFormat) {
+  return crypto
+    .createHash("sha1")
+    .update(
+      JSON.stringify({
+        base: settings.apiBaseUrl,
+        model: settings.model,
+        messages,
+        responseFormat,
+      }),
+    )
+    .digest("hex");
+}
+
+function cachedApiResponse(key) {
+  const hit = apiResponseCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.createdAt > API_CACHE_TTL_MS) {
+    apiResponseCache.delete(key);
+    return null;
+  }
+  return hit.content;
+}
+
+function storeApiResponse(key, content) {
+  apiResponseCache.set(key, { content, createdAt: Date.now() });
+  while (apiResponseCache.size > API_CACHE_LIMIT) {
+    const oldestKey = apiResponseCache.keys().next().value;
+    apiResponseCache.delete(oldestKey);
+  }
+}
+
+async function callChatApi(settings, messages, responseFormat, options = {}) {
   if (!settings.apiBaseUrl || !settings.apiKey || !settings.model) {
     throw new Error("请先在设置中填写 API Base URL、模型名和 API Key。");
   }
   const base = settings.apiBaseUrl.replace(/\/+$/, "");
   const url = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
+  const key = options.cache !== false ? apiCacheKey(settings, messages, responseFormat) : "";
+  if (key) {
+    const cached = cachedApiResponse(key);
+    if (cached !== null) return cached;
+  }
   const body = {
     model: settings.model,
     messages,
     temperature: 0.2,
   };
   if (responseFormat) body.response_format = responseFormat;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${settings.apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text();
-  if (!response.ok) {
-    throw new Error(`API 请求失败：${response.status} ${raw.slice(0, 300)}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || API_TIMEOUT_MS));
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`API 请求失败：${response.status} ${raw.slice(0, 300)}`);
+    }
+    const data = JSON.parse(raw);
+    const content = data.choices?.[0]?.message?.content || "";
+    if (key && content) storeApiResponse(key, content);
+    return content;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("API 请求超时，已切回本地结果。");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  const data = JSON.parse(raw);
-  return data.choices?.[0]?.message?.content || "";
 }
 
-async function apiSummary(db, course, docs) {
-  const source = truncateForModel(
-    docs.map((doc) => `# 文件：${doc.originalName}\n${doc.text}`).join("\n\n"),
-  );
+async function apiSummary(db, courseModel, docs, mindMap) {
+  const compactContext = truncateForModel(buildApiStudyContext(courseModel, docs, { conceptLimit: 16, formulaLimit: 14, problemLimit: 12 }), 18000);
+  const localOutline = truncateForModel(localStructuredSummary(courseModel, mindMap), 9000);
   return callChatApi(db.settings, [
     {
       role: "system",
       content:
-        "你是力学专业期末复习助教。请用中文输出严谨、可考试复习的 Markdown，强调定义、公式适用条件、典型题型、易错点。公式统一使用 `$...$` 包裹的类 LaTeX 形式，例如 `$\\sigma = \\frac{F_N}{A}$`。",
+        "你是 STEM 期末复习助教。请用中文输出严谨、可考试复习的 Markdown，强调定义、公式适用条件、典型题型、易错点。公式统一使用 `$...$` 包裹的类 LaTeX 形式，例如 `$\\sigma = \\frac{F_N}{A}$`。不要堆砌原文，优先输出高价值复习决策。",
     },
     {
       role: "user",
-      content: `科目：${course?.name || "未命名科目"}\n\n请根据下面课件和作业资料生成期末复习提纲，结构包含：知识框架、核心公式与适用条件、典型题型、解题流程、易错点、考前自测问题。\n\n${source}`,
+      content: `科目：${courseModel.course?.name || "未命名科目"}\n\n请基于结构化证据生成期末复习提纲，结构包含：知识框架、核心公式与适用条件、典型题型、解题流程、易错点、考前自测问题。控制篇幅，避免长段复制。\n\n${compactContext}\n\n## 本地提纲草稿（可优化但不要丢失证据）\n${localOutline}`,
     },
   ]);
 }
 
-async function apiQuiz(db, course, docs, body) {
-  const source = truncateForModel(
-    docs.map((doc) => `# 文件：${doc.originalName}\n${doc.text}`).join("\n\n"),
-    60000,
-  );
+async function apiQuiz(db, courseModel, docs, body, localResult) {
+  const compactContext = truncateForModel(buildApiStudyContext(courseModel, docs, { conceptLimit: 12, formulaLimit: 10, problemLimit: 8, mistakeLimit: 8 }), 14000);
+  const seedContext = truncateForModel(buildApiQuestionSeedContext(courseModel, localResult.questions, { limit: 12 }), 9000);
   const count = Math.max(3, Math.min(Number(body.count || 8), 20));
   const content = await callChatApi(
     db.settings,
@@ -2762,11 +2986,11 @@ async function apiQuiz(db, course, docs, body) {
       {
         role: "system",
         content:
-          '你是力学专业期末命题助教。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目要接近课件和作业风格，答案和解析要清楚。',
+          '你是 STEM 期末命题助教。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目要接近课件和作业风格，答案和解析要清楚，优先覆盖公式、题型入口和易错点。',
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n题目数量：${count}\n题型偏好：${(body.types || []).join(", ") || "choice, blank, short, calculation"}\n难度：${body.difficulty || "混合"}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。\n\n资料：\n${source}`,
+        content: `科目：${courseModel.course?.name || "未命名科目"}\n题目数量：${count}\n题型偏好：${(body.types || []).join(", ") || "choice, blank, short, calculation"}\n难度：${body.difficulty || "混合"}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。请在本地候选题基础上提升表达、数值条件和解析质量，不要生成与资料无关的题。\n\n${compactContext}\n\n${seedContext}`,
       },
     ],
     { type: "json_object" },
@@ -2775,22 +2999,30 @@ async function apiQuiz(db, course, docs, body) {
   const list = Array.isArray(parsed) ? parsed : parsed.questions;
   if (!Array.isArray(list)) throw new Error("API 返回的题目 JSON 格式不符合预期。");
   const sourceDocumentIds = docs.map((doc) => doc.id);
-  return list.slice(0, count).map((item) => ({
-    id: id("q"),
-    type: item.type || "short",
-    difficulty: item.difficulty || "中等",
-    stem: item.stem || "",
-    options: Array.isArray(item.options) ? item.options : [],
-    answer: item.answer || "",
-    explanation: item.explanation || "",
-    sourceDocumentIds,
+  return normalizeApiQuestionList(list, localResult.questions, { count }).map((question, indexValue) => ({
+    ...question,
+    id: question.id || id("q"),
+    question_id: question.question_id || question.id || id("q"),
+    sourceDocumentIds: question.sourceDocumentIds?.length ? question.sourceDocumentIds : sourceDocumentIds,
+    sourceRefs: question.sourceRefs?.length ? question.sourceRefs : localResult.questions[indexValue]?.sourceRefs || localResult.questions[indexValue]?.source_refs || localResult.questions[0]?.sourceRefs || [],
   }));
 }
 
 function parseJsonFromModel(content) {
   const trimmed = content.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
-  return JSON.parse(fenced ? fenced[1] : trimmed);
+  const candidate = fenced ? fenced[1] : trimmed;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const objectStart = candidate.indexOf("{");
+    const objectEnd = candidate.lastIndexOf("}");
+    const arrayStart = candidate.indexOf("[");
+    const arrayEnd = candidate.lastIndexOf("]");
+    if (objectStart >= 0 && objectEnd > objectStart) return JSON.parse(candidate.slice(objectStart, objectEnd + 1));
+    if (arrayStart >= 0 && arrayEnd > arrayStart) return JSON.parse(candidate.slice(arrayStart, arrayEnd + 1));
+    throw new Error("API 返回内容不是可解析的 JSON。");
+  }
 }
 
 async function apiAsk(db, course, docs, question) {
@@ -2798,14 +3030,16 @@ async function apiAsk(db, course, docs, question) {
     .map((item) => `【${item.doc.originalName} / ${item.label}】\n${item.text}`)
     .join("\n\n");
   if (db.settings.provider === "api" && db.settings.apiKey) {
+    const courseModel = courseKnowledgeModel(course, docs);
+    const studyContext = buildApiStudyContext(courseModel, docs, { conceptLimit: 8, formulaLimit: 8, problemLimit: 6, mistakeLimit: 4 });
     return callChatApi(db.settings, [
       {
         role: "system",
-        content: "你是力学专业期末复习助教。只能基于给定资料回答；资料不足时要明确说明。",
+        content: "你是 STEM 期末复习助教。只能基于给定资料回答；资料不足时要明确说明。回答要短、直接、面向考试复习。",
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n问题：${question}\n\n相关资料：\n${truncateForModel(context, 50000)}`,
+        content: `科目：${course?.name || "未命名科目"}\n问题：${question}\n\n结构化复习上下文：\n${truncateForModel(studyContext, 9000)}\n\n检索到的原文片段：\n${truncateForModel(context, 9000)}`,
       },
     ]);
   }
@@ -2814,15 +3048,15 @@ async function apiAsk(db, course, docs, question) {
 
 function retrieveContext(docs, question, limit = 8) {
   const queryTokens = new Set([...extractKeywords(question, 12), ...question.split(/\s+/).filter(Boolean)]);
-  const chunks = [];
+  const ranked = [];
   for (const doc of docs) {
     const units = doc.units?.length ? doc.units : [{ label: "全文", text: doc.text }];
     for (const unit of units) {
       const score = [...queryTokens].reduce((sum, token) => sum + (unit.text.includes(token) ? 1 : 0), 0);
-      chunks.push({ doc, label: unit.label, text: unit.text.slice(0, 1600), score });
+      pushTopByScore(ranked, { doc, label: unit.label, text: unit.text.slice(0, 1600), score }, limit, (item) => item.score);
     }
   }
-  return chunks.sort((a, b) => b.score - a.score).slice(0, limit);
+  return ranked;
 }
 
 function localAnswer(docs, question) {
@@ -2835,6 +3069,68 @@ function localAnswer(docs, question) {
     return "本地模式没有找到明显相关片段。你可以换一个关键词，或在设置中接入 API 后获得更强的问答能力。";
   }
   return `本地检索到这些相关片段：\n\n${snippets}\n\n建议你围绕这些片段检查定义、公式适用条件和典型题型。`;
+}
+
+function buildApiSolutionContext(courseModel, docs, question, localSolution) {
+  const studyContext = buildApiStudyContext(courseModel, docs, { conceptLimit: 10, formulaLimit: 8, problemLimit: 6, mistakeLimit: 6 });
+  const relatedUnits = retrieveContext(docs, question, 8)
+    .filter((item) => item.score > 0)
+    .map((item) => `- ${item.doc.originalName} / ${item.label}：${clampText(item.text, 260)}`);
+  const localDraft = [
+    `本地题目标题：${localSolution.title}`,
+    `本地方法入口：${localSolution.method}`,
+    localSolution.formulaHints?.length ? `公式候选：${localSolution.formulaHints.join("；")}` : "",
+    localSolution.relatedConcepts?.length ? `相关考点：${localSolution.relatedConcepts.join("、")}` : "",
+    `本地答案草稿：${localSolution.answer}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return truncateForModel(
+    [
+      `题目：${question}`,
+      "## 结构化复习上下文",
+      studyContext,
+      relatedUnits.length ? `## 检索到的资料片段\n${relatedUnits.join("\n")}` : "",
+      `## 本地解题草稿\n${localDraft}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    18000,
+  );
+}
+
+async function apiSolveQuestion(db, course, docs, body) {
+  const courseModel = courseKnowledgeModel(course, docs);
+  const localSolution = localSolveQuestion(course, docs, body, courseModel);
+  if (!(db.settings.provider === "api" && db.settings.apiKey)) {
+    return { courseModel, solution: localSolution };
+  }
+  const question = String(body.question || "").trim();
+  const content = await callChatApi(
+    db.settings,
+    [
+      {
+        role: "system",
+        content:
+          '你是严谨的 STEM 期末解题助教。只输出 JSON 对象，不要输出 Markdown。必须基于题目和资料证据，给出可复习的完整解法。JSON 字段：title, subject, question, knowns, target, relatedConcepts, formulaHints, method, steps, answer, commonMistakes, reviewCards, similarDrillPrompt。steps 为数组，每项含 title/detail/formula；reviewCards 为数组，每项含 type/title/body。公式用类 LaTeX 字符串。',
+      },
+      {
+        role: "user",
+        content: `科目：${course?.name || "未命名科目"}\n\n请生成高质量解题结果。要求：1. 先解释题型入口；2. 步骤完整但不堆砌；3. 明确最终答案或在条件不足时说明缺少什么；4. 生成可固化到期末复习记忆的 reviewCards；5. 不编造资料中不存在的来源。\n\n${buildApiSolutionContext(courseModel, docs, question, localSolution)}`,
+      },
+    ],
+    { type: "json_object" },
+    { cache: false, timeoutMs: 60000 },
+  );
+  const parsed = parseJsonFromModel(content);
+  return {
+    courseModel,
+    solution: normalizeSolution(parsed, {
+      ...localSolution,
+      provider: "api",
+      id: id("solution"),
+    }),
+  };
 }
 
 async function handleApi(req, res, pathname) {
@@ -2885,6 +3181,7 @@ async function handleApi(req, res, pathname) {
     db.documents = db.documents.filter((doc) => doc.courseId !== courseId);
     db.mistakes = db.mistakes.filter((mistake) => mistake.courseId !== courseId);
     db.sessions = db.sessions.filter((session) => session.courseId !== courseId);
+    db.solvedQuestions = (db.solvedQuestions || []).filter((item) => item.courseId !== courseId);
     await writeDb(db);
     return json(res, 200, {
       courseId,
@@ -3064,10 +3361,24 @@ async function handleApi(req, res, pathname) {
       if (Array.isArray(mistake.sourceDocumentIds)) {
         mistake.sourceDocumentIds = mistake.sourceDocumentIds.filter((idValue) => idValue !== documentId);
       }
+      if (Array.isArray(mistake.sourceRefs)) {
+        mistake.sourceRefs = mistake.sourceRefs.filter((ref) => ref.document_id !== documentId && ref.documentId !== documentId);
+      }
     }
     for (const session of db.sessions) {
       if (Array.isArray(session.sourceDocumentIds)) {
         session.sourceDocumentIds = session.sourceDocumentIds.filter((idValue) => idValue !== documentId);
+      }
+      if (Array.isArray(session.sourceRefs)) {
+        session.sourceRefs = session.sourceRefs.filter((ref) => ref.document_id !== documentId && ref.documentId !== documentId);
+      }
+    }
+    for (const solvedQuestion of db.solvedQuestions || []) {
+      if (Array.isArray(solvedQuestion.sourceDocumentIds)) {
+        solvedQuestion.sourceDocumentIds = solvedQuestion.sourceDocumentIds.filter((idValue) => idValue !== documentId);
+      }
+      if (Array.isArray(solvedQuestion.sourceRefs)) {
+        solvedQuestion.sourceRefs = solvedQuestion.sourceRefs.filter((ref) => ref.document_id !== documentId && ref.documentId !== documentId);
       }
     }
     const course = db.courses.find((item) => item.id === doc.courseId);
@@ -3088,7 +3399,7 @@ async function handleApi(req, res, pathname) {
       const knowledgeMap = localKnowledgeMap(course, docs);
       const markdown =
         db.settings.provider === "api" && db.settings.apiKey
-          ? await apiSummary(db, course, docs)
+          ? await apiSummary(db, courseModel, docs, mindMap)
           : localStructuredSummary(courseModel, mindMap);
       return json(res, 200, {
         provider: db.settings.provider === "api" && db.settings.apiKey ? "api" : "local",
@@ -3133,7 +3444,7 @@ async function handleApi(req, res, pathname) {
       const localResult = generateQuestionSet(courseModel, body);
       const questions =
         db.settings.provider === "api" && db.settings.apiKey
-          ? await apiQuiz(db, course, docs, body)
+          ? await apiQuiz(db, courseModel, docs, body, localResult)
           : localResult.questions;
       const evaluation =
         db.settings.provider === "api" && db.settings.apiKey
@@ -3231,6 +3542,79 @@ async function handleApi(req, res, pathname) {
     });
   }
 
+  if (req.method === "POST" && pathname === "/api/solve") {
+    const body = await readJson(req);
+    const course = db.courses.find((item) => item.id === body.courseId);
+    const docs = selectDocs(db, body).filter((doc) => doc.text);
+    const question = String(body.question || "").trim();
+    if (!course) return json(res, 404, { error: "没有找到该科目。" });
+    if (!question) return json(res, 400, { error: "题目不能为空。" });
+    if (!docs.length) return json(res, 400, { error: "该科目还没有可用于辅助解题的文本资料。" });
+    try {
+      const { courseModel, solution } = await apiSolveQuestion(db, course, docs, body);
+      return json(res, 200, {
+        provider: db.settings.provider === "api" && db.settings.apiKey ? solution.provider || "api" : "local",
+        courseModel,
+        solution,
+      });
+    } catch (error) {
+      const courseModel = courseKnowledgeModel(course, docs);
+      return json(res, 200, {
+        provider: "local",
+        warning: error.message,
+        courseModel,
+        solution: localSolveQuestion(course, docs, body, courseModel),
+      });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/api/solved-questions") {
+    const body = await readJson(req);
+    const course = db.courses.find((item) => item.id === body.courseId);
+    if (!course) return json(res, 404, { error: "没有找到该科目。" });
+    const solution = normalizeSolution(body.solution || body, {
+      courseId: course.id,
+      subject: course.name,
+      provider: body.provider || "local",
+    });
+    if (!solution.question) return json(res, 400, { error: "题目不能为空。" });
+    const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === course.id).map((doc) => doc.id));
+    const sourceRefs = sanitizeSourceRefs(solution.sourceRefs || solution.source_refs, courseDocIds);
+    const solvedQuestion = {
+      ...solution,
+      id: id("solved"),
+      courseId: course.id,
+      subject: course.name,
+      sourceRefs,
+      sourceDocumentIds: uniqueStrings([
+        ...(Array.isArray(solution.sourceDocumentIds) ? solution.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+        ...sourceRefs.map((ref) => ref.document_id),
+      ]),
+      provider: solution.provider || body.provider || "local",
+      memoryPinned: body.memoryPinned !== false,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    db.solvedQuestions = Array.isArray(db.solvedQuestions) ? db.solvedQuestions : [];
+    db.solvedQuestions.unshift(solvedQuestion);
+    db.solvedQuestions = db.solvedQuestions.slice(0, 300);
+    course.updatedAt = now();
+    await writeDb(db);
+    return json(res, 200, { solvedQuestion, state: publicState(db) });
+  }
+
+  if (req.method === "DELETE" && pathname.startsWith("/api/solved-questions/")) {
+    const solvedQuestionId = decodeURIComponent(pathname.split("/").pop() || "");
+    db.solvedQuestions = Array.isArray(db.solvedQuestions) ? db.solvedQuestions : [];
+    const solvedIndex = db.solvedQuestions.findIndex((item) => item.id === solvedQuestionId);
+    if (solvedIndex === -1) return json(res, 404, { error: "没有找到该解题记录。" });
+    const [solvedQuestion] = db.solvedQuestions.splice(solvedIndex, 1);
+    const course = db.courses.find((item) => item.id === solvedQuestion.courseId);
+    if (course) course.updatedAt = now();
+    await writeDb(db);
+    return json(res, 200, { solvedQuestionId, state: publicState(db) });
+  }
+
   if (req.method === "POST" && pathname.startsWith("/api/questions/") && pathname.endsWith("/progress")) {
     const parts = pathname.split("/").filter(Boolean);
     const questionId = decodeURIComponent(parts[2] || "");
@@ -3269,6 +3653,12 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "POST" && pathname === "/api/mistakes") {
     const body = await readJson(req);
+    const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === body.courseId).map((doc) => doc.id));
+    const sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
+    const sourceDocumentIds = uniqueStrings([
+      ...(Array.isArray(body.sourceDocumentIds) ? body.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+      ...sourceRefs.map((ref) => ref.document_id),
+    ]);
     const mistake = {
       id: id("mistake"),
       courseId: body.courseId,
@@ -3276,7 +3666,8 @@ async function handleApi(req, res, pathname) {
       answer: body.answer,
       explanation: body.explanation || "",
       userAnswer: body.userAnswer || "",
-      sourceDocumentIds: body.sourceDocumentIds || [],
+      sourceDocumentIds,
+      sourceRefs,
       mastered: false,
       createdAt: now(),
       updatedAt: now(),
@@ -3294,6 +3685,11 @@ async function handleApi(req, res, pathname) {
     if (!title) return json(res, 400, { error: "复习主题不能为空。" });
     const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === course.id).map((doc) => doc.id));
     const courseMistakeIds = new Set(db.mistakes.filter((mistake) => mistake.courseId === course.id).map((mistake) => mistake.id));
+    const sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
+    const sourceDocumentIds = uniqueStrings([
+      ...(Array.isArray(body.sourceDocumentIds) ? body.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+      ...sourceRefs.map((ref) => ref.document_id),
+    ]);
     const session = {
       id: id("session"),
       courseId: course.id,
@@ -3302,9 +3698,8 @@ async function handleApi(req, res, pathname) {
       chapterTitle: String(body.chapterTitle || "").trim(),
       notes: String(body.notes || "").trim(),
       durationMinutes: Math.max(1, Math.min(Number(body.durationMinutes || 20), 240)),
-      sourceDocumentIds: Array.isArray(body.sourceDocumentIds)
-        ? body.sourceDocumentIds.filter((docId) => courseDocIds.has(docId))
-        : [],
+      sourceDocumentIds,
+      sourceRefs,
       sourceMistakeIds: Array.isArray(body.sourceMistakeIds)
         ? body.sourceMistakeIds.filter((mistakeId) => courseMistakeIds.has(mistakeId))
         : [],
@@ -3336,6 +3731,14 @@ async function handleApi(req, res, pathname) {
     if (!mistake) return json(res, 404, { error: "没有找到该错题。" });
     if (typeof body.mastered === "boolean") mistake.mastered = body.mastered;
     if (typeof body.userAnswer === "string") mistake.userAnswer = body.userAnswer;
+    if (Array.isArray(body.sourceRefs) || Array.isArray(body.source_refs)) {
+      const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === mistake.courseId).map((doc) => doc.id));
+      mistake.sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
+      mistake.sourceDocumentIds = uniqueStrings([
+        ...(Array.isArray(mistake.sourceDocumentIds) ? mistake.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+        ...mistake.sourceRefs.map((ref) => ref.document_id),
+      ]);
+    }
     mistake.updatedAt = now();
     await writeDb(db);
     return json(res, 200, { mistake, state: publicState(db) });
