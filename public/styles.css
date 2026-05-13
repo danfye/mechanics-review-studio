@@ -2666,6 +2666,45 @@ textarea:focus {
   padding: 16px;
 }
 
+.api-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.api-model-row select {
+  min-width: 0;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.settings-status {
+  margin: -2px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-subtle);
+  line-height: 1.55;
+}
+
+.settings-status.good {
+  color: #1f6a44;
+  border-color: #b7dbc6;
+  background: #eef8f1;
+}
+
+.settings-status.bad {
+  color: #8f2f3f;
+  border-color: #edc5ce;
+  background: #fff1f3;
+}
+
 .mode-toggle {
   display: flex;
   flex-wrap: wrap;
@@ -4202,6 +4241,12 @@ body {
   min-width: 136px;
 }
 
+#settings-form .settings-actions .primary-button,
+#settings-form .settings-actions .secondary-button {
+  width: fit-content;
+  min-width: 136px;
+}
+
 .mode-toggle label {
   flex: 1 1 190px;
 }
@@ -4256,6 +4301,7 @@ body {
   .upload-form,
   .text-import-form,
   .tool-row,
+  .api-model-row,
   #view-summary .tool-row,
   .ask-box,
   .quality-panel,

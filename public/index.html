@@ -247,15 +247,22 @@
               <input id="api-base-url" placeholder="https://api.openai.com/v1" autocomplete="off" />
             </label>
             <label>
-              模型名
-              <input id="api-model" placeholder="例如 gpt-4.1-mini 或兼容模型名" autocomplete="off" />
+              模型
+              <div class="api-model-row">
+                <select id="api-model" autocomplete="off"></select>
+                <button id="refresh-api-models" class="secondary-button" type="button"><i data-lucide="refresh-cw"></i>检测模型</button>
+              </div>
             </label>
             <label>
               API Key
               <input id="api-key" type="password" placeholder="留空表示不修改已保存的 key" autocomplete="off" />
             </label>
             <label class="check-label"><input id="clear-api-key" type="checkbox" />清除已保存的 API Key</label>
-            <button class="primary-button" type="submit"><i data-lucide="save"></i>保存设置</button>
+            <div class="settings-actions">
+              <button id="test-api-connection" class="secondary-button" type="button"><i data-lucide="plug-zap"></i>测试连接</button>
+              <button class="primary-button" type="submit"><i data-lucide="save"></i>保存设置</button>
+            </div>
+            <p id="api-connection-status" class="settings-status muted">先填写 Base URL 和 API Key，然后检测模型。</p>
           </form>
           <p class="muted settings-note">API 配置只写入本项目的 data/db.json。默认本地模式不调用外部服务。</p>
         </section>

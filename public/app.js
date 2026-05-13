@@ -14,6 +14,7 @@
     currentMindMap: null,
     currentPlan: null,
     currentCramPack: null,
+    apiModels: [],
     pendingSourceHighlight: null,
   };
 
@@ -874,9 +875,91 @@
       radio.checked = radio.value === (settings.provider || "local");
     });
     $("#api-base-url").value = settings.apiBaseUrl || "";
-    $("#api-model").value = settings.model || "";
+    renderApiModelSelect(settings.model || "");
     $("#api-key").placeholder = settings.apiKey ? "已保存，留空不修改" : "留空表示不使用 API";
     $("#clear-api-key").checked = false;
+    const status = $("#api-connection-status");
+    if (status && !status.dataset.pinned) {
+      status.className = "settings-status muted";
+      status.textContent = settings.apiKey ? "已保存 API Key，可检测模型或测试连接。" : "先填写 Base URL 和 API Key，然后检测模型。";
+    }
+  }
+
+  function renderApiModelSelect(selectedModel = "") {
+    const select = $("#api-model");
+    if (!select) return;
+    const existing = Array.from(new Set([...state.apiModels.map((model) => model.id), selectedModel].filter(Boolean)));
+    select.innerHTML = existing.length
+      ? existing.map((modelId) => `<option value="${escapeHtml(modelId)}">${escapeHtml(modelId)}</option>`).join("")
+      : '<option value="">请先检测模型</option>';
+    select.value = selectedModel && existing.includes(selectedModel) ? selectedModel : existing[0] || "";
+    select.disabled = !existing.length;
+  }
+
+  function apiSettingsPayload() {
+    return {
+      provider: $('input[name="provider"]:checked')?.value || "local",
+      apiBaseUrl: $("#api-base-url").value,
+      model: $("#api-model").value,
+      apiKey: $("#api-key").value,
+      clearApiKey: $("#clear-api-key").checked,
+    };
+  }
+
+  function setApiStatus(message, type = "muted") {
+    const status = $("#api-connection-status");
+    if (!status) return;
+    status.dataset.pinned = "true";
+    status.className = `settings-status ${type}`;
+    status.textContent = message;
+  }
+
+  async function refreshApiModels() {
+    const button = $("#refresh-api-models");
+    button.disabled = true;
+    button.innerHTML = '<i data-lucide="loader-circle"></i>检测中';
+    setApiStatus("正在读取 API 提供的模型列表...", "muted");
+    try {
+      const data = await api("/api/settings/models", {
+        method: "POST",
+        body: JSON.stringify(apiSettingsPayload()),
+      });
+      state.apiModels = data.models || [];
+      renderApiModelSelect(data.selectedModel || $("#api-model").value);
+      setApiStatus(`检测成功：找到 ${state.apiModels.length} 个模型。请选择模型后保存。`, "good");
+      toast("模型列表已更新");
+    } catch (error) {
+      setApiStatus(error.message, "bad");
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = '<i data-lucide="refresh-cw"></i>检测模型';
+      iconRefresh();
+    }
+  }
+
+  async function testApiConnection() {
+    const button = $("#test-api-connection");
+    button.disabled = true;
+    button.innerHTML = '<i data-lucide="loader-circle"></i>测试中';
+    setApiStatus("正在测试选中模型的 Chat Completions 连接...", "muted");
+    try {
+      const data = await api("/api/settings/test", {
+        method: "POST",
+        body: JSON.stringify(apiSettingsPayload()),
+      });
+      state.apiModels = data.models || state.apiModels;
+      renderApiModelSelect(data.selectedModel || $("#api-model").value);
+      setApiStatus(data.message || "API 连接成功。", "good");
+      toast("API 连接成功");
+    } catch (error) {
+      setApiStatus(error.message, "bad");
+      toast(error.message);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = '<i data-lucide="plug-zap"></i>测试连接';
+      iconRefresh();
+    }
   }
 
   function renderMarkdown(target, markdown) {
@@ -2685,20 +2768,17 @@
       }
     });
 
+    $("#refresh-api-models").addEventListener("click", refreshApiModels);
+    $("#test-api-connection").addEventListener("click", testApiConnection);
+
     $("#settings-form").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const provider = $('input[name="provider"]:checked').value;
       await api("/api/settings", {
         method: "POST",
-        body: JSON.stringify({
-          provider,
-          apiBaseUrl: $("#api-base-url").value,
-          model: $("#api-model").value,
-          apiKey: $("#api-key").value,
-          clearApiKey: $("#clear-api-key").checked,
-        }),
+        body: JSON.stringify(apiSettingsPayload()),
       });
       $("#api-key").value = "";
+      setApiStatus("设置已保存。生成类功能会使用当前选择的模型。", "good");
       toast("设置已保存");
     });
   }

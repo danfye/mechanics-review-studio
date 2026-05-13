@@ -2705,26 +2705,128 @@ function truncateForModel(textValue, maxChars = 70000) {
   return `${textValue.slice(0, Math.floor(maxChars * 0.7))}\n\n[中间内容已截断]\n\n${textValue.slice(-Math.floor(maxChars * 0.3))}`;
 }
 
-async function callChatApi(settings, messages, responseFormat) {
+function normalizeApiBaseUrl(apiBaseUrl) {
+  const value = String(apiBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!value) return "";
+  return value.replace(/\/chat\/completions$/, "");
+}
+
+function apiRequestUrl(settings, endpoint) {
+  const base = normalizeApiBaseUrl(settings.apiBaseUrl);
+  if (!base) throw new Error("请先填写 API Base URL。");
+  return `${base}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
+}
+
+function resolveApiSettings(currentSettings = {}, body = {}) {
+  const clearApiKey = Boolean(body.clearApiKey);
+  const apiKey =
+    clearApiKey
+      ? ""
+      : typeof body.apiKey === "string" && body.apiKey.trim()
+        ? body.apiKey.trim()
+        : currentSettings.apiKey || "";
+  const hasApiBaseUrl = Object.prototype.hasOwnProperty.call(body, "apiBaseUrl");
+  const hasModel = Object.prototype.hasOwnProperty.call(body, "model");
+  return {
+    provider: body.provider === "api" ? "api" : currentSettings.provider || "local",
+    apiBaseUrl: hasApiBaseUrl ? normalizeApiBaseUrl(body.apiBaseUrl) : normalizeApiBaseUrl(currentSettings.apiBaseUrl),
+    apiKey,
+    model: hasModel ? String(body.model || "").trim() : String(currentSettings.model || "").trim(),
+  };
+}
+
+async function fetchJsonFromApi(settings, endpoint, options = {}) {
+  if (!settings.apiKey) throw new Error("请先填写 API Key。");
+  const url = apiRequestUrl(settings, endpoint);
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${settings.apiKey}`,
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    throw new Error(`API 连接失败：${error.cause?.message || error.message || "无法连接到服务"}`);
+  }
+  const raw = await response.text();
+  let data = null;
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = null;
+    }
+  }
+  if (!response.ok) {
+    const detail = data?.error?.message || data?.message || raw.slice(0, 300) || response.statusText;
+    throw new Error(`API 请求失败：${response.status} ${detail}`);
+  }
+  return data || {};
+}
+
+function normalizeModelList(data) {
+  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+  return list
+    .map((item) => (typeof item === "string" ? { id: item } : item))
+    .filter((item) => item && typeof item.id === "string" && item.id.trim())
+    .map((item) => ({
+      id: item.id.trim(),
+      ownedBy: item.owned_by || item.owner || "",
+      created: item.created || null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function listApiModels(settings) {
+  return normalizeModelList(await fetchJsonFromApi(settings, "/models", { method: "GET" }));
+}
+
+async function testApiConnection(settings) {
+  if (!settings.model) throw new Error("请先选择模型。");
+  await callChatApi(
+    settings,
+    [
+      { role: "system", content: "You are an API connectivity tester. Reply with OK only." },
+      { role: "user", content: "ping" },
+    ],
+    null,
+    { maxTokens: 8, temperature: 0 },
+  );
+  return true;
+}
+
+async function callChatApi(settings, messages, responseFormat, options = {}) {
   if (!settings.apiBaseUrl || !settings.apiKey || !settings.model) {
     throw new Error("请先在设置中填写 API Base URL、模型名和 API Key。");
   }
-  const base = settings.apiBaseUrl.replace(/\/+$/, "");
-  const url = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
   const body = {
     model: settings.model,
     messages,
-    temperature: 0.2,
+    temperature: options.temperature ?? 0.2,
   };
+  if (options.maxTokens) body.max_tokens = options.maxTokens;
   if (responseFormat) body.response_format = responseFormat;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${settings.apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  return chatApiRequest(settings, body);
+}
+
+async function chatApiRequest(settings, body) {
+  const url = apiRequestUrl(settings, "/chat/completions");
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new Error(`API 连接失败：${error.cause?.message || error.message || "无法连接到服务"}`);
+  }
   const raw = await response.text();
   if (!response.ok) {
     throw new Error(`API 请求失败：${response.status} ${raw.slice(0, 300)}`);
@@ -3357,13 +3459,46 @@ async function handleApi(req, res, pathname) {
     return json(res, 200, { mistakeId, state: publicState(db) });
   }
 
+  if (req.method === "POST" && pathname === "/api/settings/models") {
+    const body = await readJson(req);
+    const settings = resolveApiSettings(db.settings, body);
+    try {
+      const models = await listApiModels(settings);
+      return json(res, 200, {
+        ok: true,
+        models,
+        selectedModel: settings.model && models.some((model) => model.id === settings.model) ? settings.model : models[0]?.id || "",
+      });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: error.message || "模型列表获取失败。" });
+    }
+  }
+
+  if (req.method === "POST" && pathname === "/api/settings/test") {
+    const body = await readJson(req);
+    const settings = resolveApiSettings(db.settings, body);
+    try {
+      const models = await listApiModels(settings);
+      const selectedModel = settings.model && models.some((model) => model.id === settings.model) ? settings.model : models[0]?.id || settings.model;
+      await testApiConnection({ ...settings, model: selectedModel });
+      return json(res, 200, {
+        ok: true,
+        message: "API 连接成功。",
+        models,
+        selectedModel,
+      });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: error.message || "API 连接测试失败。" });
+    }
+  }
+
   if (req.method === "POST" && pathname === "/api/settings") {
     const body = await readJson(req);
+    const settings = resolveApiSettings(db.settings, body);
     db.settings.provider = body.provider === "api" ? "api" : "local";
-    db.settings.apiBaseUrl = String(body.apiBaseUrl || "").trim();
-    db.settings.model = String(body.model || "").trim();
-    if (body.clearApiKey) db.settings.apiKey = "";
-    else if (typeof body.apiKey === "string" && body.apiKey.trim()) db.settings.apiKey = body.apiKey.trim();
+    db.settings.apiBaseUrl = settings.apiBaseUrl;
+    db.settings.model = settings.model;
+    db.settings.apiKey = settings.apiKey;
     await writeDb(db);
     return json(res, 200, { settings: publicState(db).settings, state: publicState(db) });
   }
