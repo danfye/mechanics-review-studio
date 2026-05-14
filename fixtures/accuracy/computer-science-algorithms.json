@@ -1,0 +1,60 @@
+{
+  "id": "computer-science-algorithms",
+  "course": {
+    "id": "fixture_course_cs",
+    "name": "数据结构与算法"
+  },
+  "documents": [
+    {
+      "id": "fixture_cs_notes",
+      "courseId": "fixture_course_cs",
+      "originalName": "算法复习.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n算法复杂度。时间复杂度用 Big-O 描述输入规模 n 增大时基本操作次数的增长阶。递归算法可建立递推式，例如 T(n)=2T(n/2)+O(n)。例题 1：分析归并排序的时间复杂度。\n\n## 第 2 页\n图算法。邻接表适合稀疏图，Dijkstra 算法用于边权非负的单源最短路径。动态规划要求定义状态、转移方程和边界条件。作业题 1：写出 0-1 背包问题的状态转移。常见错误：状态定义不闭合导致转移方程无法复用。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "算法复杂度。时间复杂度用 Big-O 描述输入规模 n 增大时基本操作次数的增长阶。递归算法可建立递推式，例如 T(n)=2T(n/2)+O(n)。例题 1：分析归并排序的时间复杂度。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "图算法。邻接表适合稀疏图，Dijkstra 算法用于边权非负的单源最短路径。动态规划要求定义状态、转移方程和边界条件。作业题 1：写出 0-1 背包问题的状态转移。常见错误：状态定义不闭合导致转移方程无法复用。"
+        }
+      ]
+    }
+  ],
+  "mistakes": [
+    {
+      "id": "fixture_cs_mistake_1",
+      "courseId": "fixture_course_cs",
+      "question": "动态规划题只写了转移方程，但没有定义状态含义。",
+      "answer": "先写 dp[i][j] 表示什么，再给转移和边界条件。",
+      "explanation": "错因是状态定义不闭合。",
+      "mastered": false,
+      "sourceDocumentIds": ["fixture_cs_notes"],
+      "sourceRefs": [
+        {
+          "document_id": "fixture_cs_notes",
+          "unit_index": 1,
+          "unit_label": "第 2 页",
+          "excerpt": "动态规划要求定义状态、转移方程和边界条件"
+        }
+      ]
+    }
+  ],
+  "sessions": [],
+  "expected": {
+    "conceptTerms": ["时间复杂度", "递归", "图", "动态规划"],
+    "formulaTerms": ["T"],
+    "questionTerms": ["复杂度", "Dijkstra", "动态规划"],
+    "minimums": {
+      "documents": 1,
+      "concepts": 4,
+      "formulas": 1,
+      "questions": 8,
+      "planItems": 1,
+      "cramFocusTopics": 1,
+      "sourceRefCoverage": 0.75
+    }
+  }
+}

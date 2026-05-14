@@ -1,0 +1,60 @@
+{
+  "id": "chemistry-equilibrium",
+  "course": {
+    "id": "fixture_course_chemistry",
+    "name": "化学"
+  },
+  "documents": [
+    {
+      "id": "fixture_chem_notes",
+      "courseId": "fixture_course_chemistry",
+      "originalName": "化学平衡复习.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n化学平衡。可逆反应达到动态平衡时正逆反应速率相等。平衡常数 K_c = [C]^c[D]^d / ([A]^a[B]^b)。例题 1：对 N2 + 3H2 ⇌ 2NH3 写出 K_c 表达式。\n\n## 第 2 页\n酸碱与 pH。pH = -log[H+]，弱酸电离常数 K_a = [H+][A-]/[HA]。作业题 1：计算 0.01 mol/L 强酸溶液 pH。常见错误：把反应商 Q 与平衡常数 K 混用。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "化学平衡。可逆反应达到动态平衡时正逆反应速率相等。平衡常数 K_c = [C]^c[D]^d / ([A]^a[B]^b)。例题 1：对 N2 + 3H2 ⇌ 2NH3 写出 K_c 表达式。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "酸碱与 pH。pH = -log[H+]，弱酸电离常数 K_a = [H+][A-]/[HA]。作业题 1：计算 0.01 mol/L 强酸溶液 pH。常见错误：把反应商 Q 与平衡常数 K 混用。"
+        }
+      ]
+    }
+  ],
+  "mistakes": [
+    {
+      "id": "fixture_chem_mistake_1",
+      "courseId": "fixture_course_chemistry",
+      "question": "写平衡常数表达式时把纯固体或反应商 Q 混入 K。",
+      "answer": "按化学计量数写 K_c，动态平衡时 K 只与温度有关。",
+      "explanation": "错因是没有区分平衡常数 K 和反应商 Q。",
+      "mastered": false,
+      "sourceDocumentIds": ["fixture_chem_notes"],
+      "sourceRefs": [
+        {
+          "document_id": "fixture_chem_notes",
+          "unit_index": 0,
+          "unit_label": "第 1 页",
+          "excerpt": "平衡常数 K_c = [C]^c[D]^d / ([A]^a[B]^b)"
+        }
+      ]
+    }
+  ],
+  "sessions": [],
+  "expected": {
+    "conceptTerms": ["化学平衡", "酸碱平衡"],
+    "formulaTerms": ["K_{c}", "[C]"],
+    "questionTerms": ["化学平衡", "pH"],
+    "minimums": {
+      "documents": 1,
+      "concepts": 2,
+      "formulas": 1,
+      "questions": 8,
+      "planItems": 1,
+      "cramFocusTopics": 1,
+      "sourceRefCoverage": 0.75
+    }
+  }
+}

@@ -19,6 +19,10 @@ const {
   StudyPlanGenerator,
   publicState,
 } = require("../server.cjs");
+const {
+  localSolveQuestion,
+  normalizeApiQuestion,
+} = require("../lib/core/solution-generator.cjs");
 
 const runtimeRequire = createRuntimeRequire(path.join(__dirname, ".."));
 
@@ -241,6 +245,16 @@ async function makePdf() {
           answer: "先确定最大弯矩截面，再用 sigma = M y / I。",
           explanation: "错因是没有先找危险截面。",
           sourceDocumentIds: ["doc_1"],
+          sourceRefs: [
+            {
+              document_id: "doc_1",
+              file_name: "sample.pptx",
+              unit_index: 0,
+              unit_label: docs[0].units?.[0]?.label || "全文",
+              locator_label: "弯曲正应力",
+              excerpt: "弯曲正应力公式适用条件和危险截面判断错",
+            },
+          ],
           mastered: false,
         },
       ],
@@ -253,6 +267,10 @@ async function makePdf() {
   if (!cramPack.formulas.length) throw new Error("Cram pack missed formula queue");
   if (!cramPack.mistakeQueue.some((item) => item.id === "mistake_cram_1" && !item.mastered)) {
     throw new Error("Cram pack missed unmastered mistake queue");
+  }
+  const cramMistake = cramPack.mistakeQueue.find((item) => item.id === "mistake_cram_1");
+  if (!cramMistake?.sourceRefs?.some((ref) => ref.document_id === "doc_1" && Number(ref.unit_index) === 0)) {
+    throw new Error(`Cram pack mistake queue did not preserve sourceRefs: ${JSON.stringify(cramMistake)}`);
   }
   if (!cramPack.drillQuestions.length || cramPack.summary.drillQuestionCount !== cramPack.drillQuestions.length) {
     throw new Error("Cram pack drill questions summary failed");
@@ -576,6 +594,12 @@ async function makePdf() {
   if (!richQuestions.some((question) => question.tags?.includes("教材习题库"))) {
     throw new Error("Question generator missed local textbook exercise questions");
   }
+  if (!courseModel.learning_pack?.drill_templates?.length) {
+    throw new Error("Course model missed import-time learning pack drill templates");
+  }
+  if (!richQuestions.some((question) => question.tags?.includes("增量知识包"))) {
+    throw new Error("Question generator did not consume learning-pack drills");
+  }
   const librarySubjects = [
     {
       course: { id: "course_theory_questions", name: "理论力学" },
@@ -705,6 +729,9 @@ async function makePdf() {
   if (planFar.days[0].total_minutes !== 90 || planNear.days[0].total_minutes !== 60) {
     throw new Error("Study plan did not respect daily minutes");
   }
+  if (!planFar.items.some((item) => item.sourceRefs?.some((ref) => ref.document_id && Number.isInteger(Number(ref.unit_index))))) {
+    throw new Error("Study plan items did not expose precise sourceRefs");
+  }
 
   const publicWorkspace = publicState({
     version: 1,
@@ -721,6 +748,7 @@ async function makePdf() {
         units: [{ label: "第 1 页", text: "2 - 1、轴向拉压\n例题 1：求正应力。" }],
         keywords: ["轴向拉压"],
         parseQuality: { level: "good", score: 88, counts: { chapters: 1, concepts: 1, formulas: 0, examples: 1 } },
+        learningPack: courseModel.documents[0]?.learning_pack,
       },
     ],
     mistakes: [{ id: "mistake_workspace", courseId: course.id, mastered: false }],
@@ -735,8 +763,53 @@ async function makePdf() {
   if (workspaceCourse?.stats?.documents !== 1 || workspaceCourse.stats.unmasteredMistakes !== 1 || workspaceCourse.stats.sessions !== 1) {
     throw new Error(`Workspace course stats failed: ${JSON.stringify(workspaceCourse?.stats)}`);
   }
+  if (!workspaceCourse?.stats?.learningPacks || !workspaceDoc?.learningPack?.coverage?.drillTemplates) {
+    throw new Error(`Workspace learning pack stats failed: ${JSON.stringify({ course: workspaceCourse?.stats, doc: workspaceDoc?.learningPack })}`);
+  }
   if (!workspaceDoc?.outline?.landmarks?.some((item) => item.type === "example")) {
     throw new Error(`Workspace document outline missed example anchor: ${JSON.stringify(workspaceDoc?.outline)}`);
+  }
+
+  const solved = localSolveQuestion(
+    course,
+    docs,
+    { question: "简支梁跨中集中力 P，求最大弯矩并说明弯曲正应力校核入口。" },
+    courseModel,
+  );
+  if (!solved.steps?.length || !solved.answer || !solved.reviewCards?.length || !solved.quality?.checks?.has_steps) {
+    throw new Error(`Local solution output shape failed: ${JSON.stringify(solved)}`);
+  }
+  if (!solved.quality.checks.has_answer || !solved.quality.checks.has_review_memory) {
+    throw new Error(`Local solution quality checks failed: ${JSON.stringify(solved.quality)}`);
+  }
+
+  const normalizedApiQuestion = normalizeApiQuestion({
+    question_id: "api_q_1",
+    stem: "已知直杆轴力 F_N，求横截面正应力。",
+    answer: "\\sigma = F_N / A",
+    steps: ["识别轴向拉压题。", "确定截面面积 A。", "代入正应力公式。"],
+    sourceRefs: [
+      {
+        documentId: "doc_1",
+        fileName: "sample.pptx",
+        unitIndex: 0,
+        unitLabel: "第 1 页",
+        locatorLabel: "轴向拉压",
+        anchorText: "横截面正应力公式",
+      },
+    ],
+  });
+  if (normalizedApiQuestion.question_text !== normalizedApiQuestion.stem || normalizedApiQuestion.question_id !== "api_q_1") {
+    throw new Error(`API question stem compatibility failed: ${JSON.stringify(normalizedApiQuestion)}`);
+  }
+  if (normalizedApiQuestion.answer !== "\\sigma = F_N / A" || normalizedApiQuestion.step_by_step_solution.length !== 3) {
+    throw new Error(`API question answer/steps normalization failed: ${JSON.stringify(normalizedApiQuestion)}`);
+  }
+  if (!normalizedApiQuestion.sourceRefs.some((ref) => ref.document_id === "doc_1" && ref.unit_index === 0)) {
+    throw new Error(`API question sourceRefs normalization failed: ${JSON.stringify(normalizedApiQuestion.sourceRefs)}`);
+  }
+  if (!normalizedApiQuestion.sourceDocumentIds.includes("doc_1")) {
+    throw new Error(`API question sourceDocumentIds compatibility failed: ${JSON.stringify(normalizedApiQuestion)}`);
   }
 
   console.log("core tests ok");

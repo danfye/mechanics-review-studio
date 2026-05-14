@@ -1,0 +1,60 @@
+{
+  "id": "electrical-circuits",
+  "course": {
+    "id": "fixture_course_circuit",
+    "name": "电路分析"
+  },
+  "documents": [
+    {
+      "id": "fixture_circuit_notes",
+      "courseId": "fixture_course_circuit",
+      "originalName": "电路分析复习.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n直流电路分析。欧姆定律 V = I R，基尔霍夫电流定律 KCL 要求节点电流代数和为零，基尔霍夫电压定律 KVL 要求闭合回路电压代数和为零。例题 1：用节点电压法求含两个独立电源和三个电阻的电路节点电压。\n\n## 第 2 页\n戴维南等效。端口开路电压 U_oc 与等效电阻 R_th 可以把线性网络替换为等效电压源。RC暂态中电容电压不能突变，时间常数 tau = R C。作业题 1：开关闭合后求 u_C(t)。常见错误：电流参考方向改变后 KCL 符号没有同步。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "直流电路分析。欧姆定律 V = I R，基尔霍夫电流定律 KCL 要求节点电流代数和为零，基尔霍夫电压定律 KVL 要求闭合回路电压代数和为零。例题 1：用节点电压法求含两个独立电源和三个电阻的电路节点电压。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "戴维南等效。端口开路电压 U_oc 与等效电阻 R_th 可以把线性网络替换为等效电压源。RC暂态中电容电压不能突变，时间常数 tau = R C。作业题 1：开关闭合后求 u_C(t)。常见错误：电流参考方向改变后 KCL 符号没有同步。"
+        }
+      ]
+    }
+  ],
+  "mistakes": [
+    {
+      "id": "fixture_circuit_mistake_1",
+      "courseId": "fixture_course_circuit",
+      "question": "列 KCL 时电流参考方向改了但方程符号没有同步。",
+      "answer": "先固定参考方向，流入和流出按同一规则列节点电流代数和。",
+      "explanation": "错因是参考方向和代数符号没有绑定。",
+      "mastered": false,
+      "sourceDocumentIds": ["fixture_circuit_notes"],
+      "sourceRefs": [
+        {
+          "document_id": "fixture_circuit_notes",
+          "unit_index": 0,
+          "unit_label": "第 1 页",
+          "excerpt": "基尔霍夫电流定律 KCL 要求节点电流代数和为零"
+        }
+      ]
+    }
+  ],
+  "sessions": [],
+  "expected": {
+    "conceptTerms": ["欧姆定律", "基尔霍夫定律", "节点电压法", "戴维南等效", "RC暂态"],
+    "formulaTerms": ["V", "R"],
+    "questionTerms": ["KCL", "戴维南", "RC"],
+    "minimums": {
+      "documents": 1,
+      "concepts": 4,
+      "formulas": 1,
+      "questions": 8,
+      "planItems": 1,
+      "cramFocusTopics": 1,
+      "sourceRefCoverage": 0.75
+    }
+  }
+}
