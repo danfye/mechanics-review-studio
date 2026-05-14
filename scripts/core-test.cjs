@@ -18,10 +18,12 @@ const {
   generateMindMap,
   StudyPlanGenerator,
   publicState,
+  buildApiStudyContext,
+  normalizeApiQuestion,
+  parseJsonFromModel,
 } = require("../server.cjs");
 const {
   localSolveQuestion,
-  normalizeApiQuestion,
 } = require("../lib/core/solution-generator.cjs");
 
 const runtimeRequire = createRuntimeRequire(path.join(__dirname, ".."));
@@ -38,6 +40,7 @@ async function makePptx() {
         <a:p><a:r><a:t>简支梁跨中集中力 P，最大弯矩 M = P L / 4</a:t></a:r></a:p>
         <a:p><a:r><a:t>弯曲正应力 sigma = M y / I，需要检查强度条件</a:t></a:r></a:p>
         <a:p><a:r><a:t>Symbol 字体：</a:t></a:r><a:r><a:rPr><a:latin typeface="Symbol"/></a:rPr><a:t>s</a:t></a:r><a:r><a:t> = F / A</a:t></a:r></a:p>
+        <p:pic><p:nvPicPr><p:cNvPr id="4" name="diagram" descr="图示：梁弯曲危险截面和中性轴示意"/></p:nvPicPr></p:pic>
         <a:p>
           <a:r><a:t>公式对象：</a:t></a:r>
           <m:oMath>
@@ -48,6 +51,20 @@ async function makePptx() {
         </a:p>
       </p:txBody></p:sp></p:spTree></p:cSld>
     </p:sld>`,
+  );
+  zip.file(
+    "ppt/slides/_rels/slide1.xml.rels",
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+      <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+    </Relationships>`,
+  );
+  zip.file(
+    "ppt/notesSlides/notesSlide1.xml",
+    `<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <p:cSld><p:spTree><p:sp><p:txBody>
+        <a:p><a:r><a:t>备注：本页考试重点是先找危险截面，再使用强度条件。</a:t></a:r></a:p>
+      </p:txBody></p:sp></p:spTree></p:cSld>
+    </p:notes>`,
   );
   return zip.generateAsync({ type: "nodebuffer" });
 }
@@ -70,6 +87,12 @@ async function makePdf() {
   const pptx = await extractTextFromFile(await makePptx(), "sample.pptx");
   if (!pptx.text.includes("最大弯矩")) throw new Error("PPTX extraction failed");
   if (!pptx.text.includes("σ = F / A")) throw new Error("PPTX Symbol font extraction failed");
+  if (!pptx.text.includes("危险截面和中性轴示意") || !pptx.text.includes("备注：本页考试重点")) {
+    throw new Error(`PPTX alt text or speaker notes extraction failed: ${pptx.text}`);
+  }
+  if (!pptx.units[0]?.hasAltText || !pptx.units[0]?.hasNotes || !pptx.units[0]?.mathCount) {
+    throw new Error(`PPTX unit metadata failed: ${JSON.stringify(pptx.units[0])}`);
+  }
   if (!pptx.text.includes("F_{N}") || !/\\frac\{E A \\Delta l\}\{l\}|\(EAΔl\) \/ \(l\)/.test(pptx.text)) {
     throw new Error(`PPTX formula extraction failed: ${pptx.text}`);
   }
@@ -599,6 +622,47 @@ async function makePdf() {
   }
   if (!richQuestions.some((question) => question.tags?.includes("增量知识包"))) {
     throw new Error("Question generator did not consume learning-pack drills");
+  }
+  const apiContext = buildApiStudyContext(courseModel, sample.documents, { conceptLimit: 8, formulaLimit: 8, problemLimit: 8 });
+  const apiContextObject = JSON.parse(apiContext);
+  if (
+    !apiContextObject.concepts?.length ||
+    !apiContextObject.formulas?.length ||
+    !apiContextObject.problems?.length ||
+    !apiContextObject.evidence?.length ||
+    !apiContextObject.learning_pack?.summary_text ||
+    !apiContextObject.learning_pack?.drill_templates?.length
+  ) {
+    throw new Error(`API study context missed structured signals: ${apiContext.slice(0, 900)}`);
+  }
+  if (!apiContextObject.formulas.some((formula) => String(formula.expression || "").includes("\\frac"))) {
+    throw new Error(`API study context did not preserve wrapped formulas: ${JSON.stringify(apiContextObject.formulas)}`);
+  }
+  const parsedLooseJson = parseJsonFromModel(`下面是题目 JSON：\n{"questions":[{"question_type":"calculation","question_text":"用公式求解","answer":"先判断条件。"}]}\n请查收。`);
+  if (!Array.isArray(parsedLooseJson.questions) || parsedLooseJson.questions[0].question_type !== "calculation") {
+    throw new Error("Loose API JSON parsing failed");
+  }
+  const normalizedApiQuestionFromContext = normalizeApiQuestion(
+    {
+      question_type: "formula_application",
+      difficulty: "hard",
+      question_text: "判断 $\\sigma = \\frac{F_N}{A}$ 的适用条件。",
+      answer: "先确认轴向拉压、截面和远离集中力作用区。",
+      related_concepts: ["轴向拉压", "应力"],
+      source_refs: courseModel.formulas[0].source_refs,
+      step_by_step_solution: ["识别公式", "检查适用条件", "说明误用风险"],
+      common_mistakes: ["把外力直接当轴力"],
+      grading_rubric: ["条件", "变量", "误用"],
+      tags: ["公式", "适用条件"],
+    },
+  );
+  if (
+    normalizedApiQuestionFromContext.question_type !== "formula_application" ||
+    normalizedApiQuestionFromContext.type !== "blank" ||
+    !normalizedApiQuestionFromContext.sourceRefs.length ||
+    !normalizedApiQuestionFromContext.sourceDocumentIds.length
+  ) {
+    throw new Error(`API question normalization failed: ${JSON.stringify(normalizedApiQuestionFromContext)}`);
   }
   const librarySubjects = [
     {

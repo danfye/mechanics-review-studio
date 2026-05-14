@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node server.cjs",
     "accuracy": "node scripts/accuracy-report.cjs",
+    "open": "node scripts/launch-local.cjs",
+    "make:mac-app": "node scripts/create-macos-app.cjs",
     "package:share": "node scripts/package-share.cjs",
     "test:core": "node scripts/core-test.cjs",
     "smoke": "node scripts/smoke-test.cjs"

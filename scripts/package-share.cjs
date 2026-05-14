@@ -16,6 +16,7 @@ const FILES_TO_COPY = [
   "package.json",
   "README.md",
   "FEATURE_SUMMARY.md",
+  "scripts/launch-local.cjs",
 ];
 
 const DIRS_TO_COPY = [
@@ -136,6 +137,7 @@ async function removeIfExists(targetPath) {
 }
 
 async function copyPath(source, target) {
+  await fsp.mkdir(path.dirname(target), { recursive: true });
   await fsp.cp(source, target, {
     recursive: true,
     filter: (currentSource) => !currentSource.includes(`${path.sep}node_modules${path.sep}`),

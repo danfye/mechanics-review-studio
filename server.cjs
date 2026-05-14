@@ -20,6 +20,7 @@ const { toLatexFormula, wrapInlineFormula, latexFraction } = require("./lib/core
 const { verifyFormula } = require("./lib/core/formula-verifier.cjs");
 const {
   localSolveQuestion,
+  normalizeApiQuestion,
   normalizeApiQuestionList,
   normalizeSolution,
 } = require("./lib/core/solution-generator.cjs");
@@ -1301,15 +1302,24 @@ async function extractPptx(buffer) {
   const slideFiles = zip
     .file(/^ppt\/slides\/slide\d+\.xml$/)
     .sort((a, b) => slideNumber(a.name) - slideNumber(b.name));
+  const notesBySlide = await extractPptxNotesBySlide(zip);
   const units = [];
 
   for (const file of slideFiles) {
     const xml = await file.async("text");
-    const unitText = extractSlideXmlText(xml);
+    const number = slideNumber(file.name);
+    const altText = extractPptxAltText(xml);
+    const notesText = notesBySlide.get(number) || "";
+    const unitText = normalizeText(uniqueStrings([extractSlideXmlText(xml), altText, notesText]).join("\n"));
     if (unitText) {
       units.push({
-        label: `第 ${slideNumber(file.name)} 页`,
+        label: `第 ${number} 页`,
         text: unitText,
+        lines: unitText.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 80),
+        mathCount: (unitText.match(/\\(?:frac|sqrt|sigma|tau|Delta|int|sum)|[=≈≤≥∑Σ∫√σσετγθφωΩμνΔ]/g) || []).length,
+        symbolCount: (unitText.match(/[σσετγθφωΩμνΔδψπρ∇Φ]/g) || []).length,
+        hasNotes: Boolean(notesText),
+        hasAltText: Boolean(altText),
       });
     }
   }
@@ -1323,6 +1333,40 @@ async function extractPptx(buffer) {
 
 function slideNumber(name) {
   return Number(/slide(\d+)\.xml$/i.exec(name)?.[1] || 0);
+}
+
+async function extractPptxNotesBySlide(zip) {
+  const notesByNumber = new Map();
+  const noteFiles = zip.file(/^ppt\/notesSlides\/notesSlide\d+\.xml$/);
+  await Promise.all(
+    noteFiles.map(async (file) => {
+      const number = Number(/notesSlide(\d+)\.xml$/i.exec(file.name)?.[1] || 0);
+      const textValue = extractSlideXmlText(await file.async("text"));
+      if (number && textValue) notesByNumber.set(number, textValue);
+    }),
+  );
+  const relFiles = zip.file(/^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/);
+  const result = new Map();
+  await Promise.all(
+    relFiles.map(async (file) => {
+      const number = slideNumber(file.name.replace(".rels", ""));
+      const relXml = await file.async("text");
+      const target = /Target="([^"]*notesSlide(\d+)\.xml)"/i.exec(relXml);
+      const noteNumber = Number(target?.[2] || 0);
+      const textValue = noteNumber ? notesByNumber.get(noteNumber) || "" : "";
+      if (number && textValue) result.set(number, textValue);
+    }),
+  );
+  return result;
+}
+
+function extractPptxAltText(xml) {
+  const values = [];
+  for (const match of xml.matchAll(/\b(?:descr|title)="([^"]+)"/g)) {
+    const textValue = normalizeText(decodeXml(match[1]));
+    if (textValue && !/^Picture\s+\d+$/i.test(textValue)) values.push(textValue);
+  }
+  return normalizeText(uniqueStrings(values).join("\n"));
 }
 
 async function getPdfJs() {
@@ -2713,6 +2757,12 @@ function localSimilarQuestions(mistake, docs, count = 4) {
     }));
 }
 
+function apiRoleLabel(courseModel = {}, course = {}) {
+  const profileLabel = courseModel?.course?.focus_profile?.label || "";
+  const courseName = course?.name || courseModel?.course?.name || "理工科课程";
+  return `${courseName}${profileLabel ? `（${profileLabel}）` : ""}`;
+}
+
 function apiCourseLabel(course = {}) {
   return `${course?.name || "当前科目"} STEM 期末复习`;
 }
@@ -2723,79 +2773,176 @@ function compactSourceRef(ref = {}) {
   return clampText(parts.join(" / "), 150);
 }
 
-function formatApiBullet(value, maxLength = 110) {
-  return `- ${clampText(markdownInlineFormulas(value), maxLength)}`;
+function cleanKnownText(value, fallback = "") {
+  const textValue = cleanStudyText(value);
+  return textValue && textValue !== "unknown" ? textValue : fallback;
+}
+
+function cleanApiSourceRefs(sourceRefs = [], limit = 3) {
+  return (sourceRefs || []).slice(0, limit).map((ref) => ({
+    document_id: ref.document_id || ref.documentId || "",
+    file_name: ref.file_name || ref.fileName || "",
+    unit_index: Number.isInteger(ref.unit_index) ? ref.unit_index : Number.isInteger(ref.unitIndex) ? ref.unitIndex : 0,
+    unit_label: ref.unit_label || ref.unitLabel || "",
+    slide_number: ref.slide_number || ref.slideNumber || null,
+    page_number: ref.page_number || ref.pageNumber || null,
+    locator_type: ref.locator_type || ref.locatorType || "unit",
+    anchor_label: ref.anchor_label || ref.anchorLabel || "",
+    excerpt: clampText(ref.excerpt || ref.anchor_text || "", 120),
+  }));
+}
+
+function uniqueBySourceRef(refs = []) {
+  const seen = new Set();
+  return refs.filter((ref) => {
+    const key = `${ref.document_id || ""}:${ref.unit_index ?? ""}:${ref.excerpt || ref.anchor_text || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function collectApiEvidence(courseModel = {}, docs = [], limit = 10) {
+  const refs = [
+    ...(courseModel.chapters || []).flatMap((item) => item.source_refs || []),
+    ...(courseModel.formulas || []).flatMap((item) => item.source_refs || []),
+    ...(courseModel.examples || []).flatMap((item) => item.source_refs || []),
+    ...(courseModel.homework_problems || []).flatMap((item) => item.source_refs || []),
+    ...(courseModel.mistake_points || []).flatMap((item) => item.source_refs || []),
+    ...(courseModel.learning_pack?.source_refs || []),
+  ];
+  const fromRefs = uniqueBySourceRef(refs).slice(0, limit).map((ref) => ({
+    label: `${ref.file_name || "资料"} / ${sourceRefDisplayLabel(ref)}`,
+    source_refs: cleanApiSourceRefs([ref], 1),
+    excerpt: clampText(ref.excerpt || ref.anchor_text || "", 180),
+  }));
+  if (fromRefs.length >= Math.min(4, limit)) return fromRefs;
+  return docs
+    .flatMap((doc) => (doc.units?.length ? doc.units : [{ label: "全文", text: doc.text }]).map((unit, index) => ({ doc, unit, index })))
+    .map(({ doc, unit, index }) => ({
+      label: `${doc.originalName || "资料"} / ${unit.label || "全文"}`,
+      source_refs: cleanApiSourceRefs([makeUnitSourceRef(doc, unit, index, unit.text || "", "medium")], 1),
+      excerpt: clampText(getImportantSentences(unit.text || "", extractKeywords(unit.text || "", 8), 1)[0] || unit.text || "", 180),
+    }))
+    .filter((item) => item.excerpt)
+    .slice(0, limit);
+}
+
+function apiLearningPackSummary(learningPack = {}, options = {}) {
+  if (!learningPack || !Object.keys(learningPack).length) return null;
+  return {
+    summary_text: learningPackContext(learningPack, {
+      conceptLimit: Math.min(10, options.concepts ?? options.conceptLimit ?? 10),
+      formulaLimit: Math.min(8, options.formulas ?? options.formulaLimit ?? 8),
+      problemLimit: Math.min(8, options.problems ?? options.problemLimit ?? 8),
+      pitfallLimit: Math.min(8, options.mistakes ?? options.mistakeLimit ?? 8),
+      drillLimit: 8,
+    }),
+    concepts: (learningPack.concepts || []).slice(0, 10).map((item) => ({
+      name: item.name,
+      priority: item.priority || item.score || 0,
+      source_refs: cleanApiSourceRefs(item.source_refs || [], 2),
+    })),
+    formulas: (learningPack.formulas || []).slice(0, 8).map((item) => ({
+      name: item.name || "公式",
+      expression: wrapInlineFormula(item.expression) || item.expression || "",
+      conditions: cleanKnownText(item.applicable_conditions || item.conditions, "回到来源页核对适用条件"),
+      source_refs: cleanApiSourceRefs(item.source_refs || [], 2),
+    })),
+    problem_templates: (learningPack.problem_templates || []).slice(0, 8),
+    pitfalls: (learningPack.pitfalls || []).slice(0, 8),
+    drill_templates: (learningPack.drill_templates || []).slice(0, 8),
+  };
 }
 
 function buildApiStudyContext(courseModel = {}, docs = [], options = {}) {
-  const index = buildCourseModelIndex(courseModel);
-  const coreConcepts = selectSummaryConcepts(courseModel, options.conceptLimit || 14, index);
-  const chapterLimit = options.chapterLimit || 8;
-  const formulaLimit = options.formulaLimit || 12;
-  const problemLimit = options.problemLimit || 10;
-  const mistakeLimit = options.mistakeLimit || 8;
-  const sourceRefLimit = options.sourceRefLimit || 10;
-  const chapters = (courseModel.chapters || []).slice(0, chapterLimit).map((chapter) => {
-    const chapterId = chapter.chapter_id;
-    const concepts = chapterItems(index.conceptsByChapter, chapterId)
-      .sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0))
-      .slice(0, 4)
-      .map((concept) => concept.name);
-    const formulas = chapterItems(index.formulasByChapter, chapterId)
-      .slice(0, 3)
-      .map((formula) => `${formula.name || "公式"} ${wrapInlineFormula(formula.expression) || formula.expression}`);
-    const problems = chapterItems(index.problemsByChapter, chapterId)
-      .slice(0, 2)
-      .map((problem) => problem.title);
-    return [
-      `### ${summaryChapterTitle(chapter, { concepts, formulas, problems })}`,
-      concepts.length ? `概念：${concepts.join("、")}` : "",
-      formulas.length ? `公式：${formulas.join("；")}` : "",
-      problems.length ? `题型：${problems.join("；")}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-  });
-  const formulas = (courseModel.formulas || [])
-    .slice(0, formulaLimit)
-    .map((formula) => `${formula.name || "公式"}：${wrapInlineFormula(formula.expression) || formula.expression}；条件：${formula.applicable_conditions || "从题设判断适用范围"}`);
-  const problems = index.problems.slice(0, problemLimit).map((problem) => {
-    const ref = compactSourceRef(problem.source_refs?.[0] || {});
-    return `${problem.title || "题型"}：${clampText(problem.problem_text || problem.title || "", 120)}${ref ? `（来源：${ref}）` : ""}`;
-  });
-  const mistakes = (courseModel.mistake_points || [])
-    .slice(0, mistakeLimit)
-    .map((mistake) => `${mistake.description}${mistake.related_concepts?.length ? `；关联：${mistake.related_concepts.slice(0, 3).join("、")}` : ""}`);
-  const sourceRefs = uniqueSourceRefs([
-    ...coreConcepts.flatMap((item) => item.source_refs || []),
-    ...(courseModel.formulas || []).flatMap((item) => item.source_refs || []),
-    ...index.problems.flatMap((item) => item.source_refs || []),
-    ...(courseModel.mistake_points || []).flatMap((item) => item.source_refs || []),
-  ])
-    .slice(0, sourceRefLimit)
-    .map(compactSourceRef)
-    .filter(Boolean);
-  const docStats = docs.map((doc) => `${doc.originalName || doc.id}: ${(doc.units || []).length || 1} 个片段`).slice(0, 8);
-  const packContext = courseModel.learning_pack
-    ? learningPackContext(courseModel.learning_pack, {
-        conceptLimit: Math.min(10, options.conceptLimit || 10),
-        formulaLimit: Math.min(8, options.formulaLimit || 8),
-        problemLimit: Math.min(8, options.problemLimit || 8),
-        pitfallLimit: Math.min(8, options.mistakeLimit || 8),
-        drillLimit: 8,
-      })
-    : "";
-  return [
-    `课程：${apiCourseLabel(courseModel.course)}`,
-    `资料规模：${docStats.join("；") || "未统计"}。只使用下列高价值结构化证据，不要复述无关原文。`,
-    packContext,
-    `## 核心考点\n${coreConcepts.map((concept) => formatApiBullet(`${concept.name}：${concept.description || concept.source_refs?.[0]?.excerpt || "按定义、条件、题型入口复习"}`)).join("\n") || "- 暂无"}`,
-    `## 章节压缩\n${chapters.join("\n\n") || "- 暂无"}`,
-    `## 公式与条件\n${formulas.map((item) => formatApiBullet(item, 150)).join("\n") || "- 暂无"}`,
-    `## 例题/作业题型\n${problems.map((item) => formatApiBullet(item, 170)).join("\n") || "- 暂无"}`,
-    `## 易错点\n${mistakes.map((item) => formatApiBullet(item, 140)).join("\n") || "- 暂无"}`,
-    `## 可追溯来源\n${sourceRefs.map((item) => formatApiBullet(item, 150)).join("\n") || "- 暂无"}`,
-  ].join("\n\n");
+  const limit = {
+    chapters: options.chapters ?? options.chapterLimit ?? 8,
+    concepts: options.concepts ?? options.conceptLimit ?? 14,
+    formulas: options.formulas ?? options.formulaLimit ?? 10,
+    problems: options.problems ?? options.problemLimit ?? 8,
+    mistakes: options.mistakes ?? options.mistakeLimit ?? 8,
+    evidence: options.evidence ?? 10,
+  };
+  const chapters = [...(courseModel.chapters || [])]
+    .sort((a, b) => Number(b.exam_focus?.score || 0) - Number(a.exam_focus?.score || 0))
+    .slice(0, limit.chapters)
+    .map((chapter) => ({
+      id: chapter.chapter_id,
+      title: summaryChapterTitle(chapter),
+      difficulty: chapter.difficulty || "medium",
+      exam_focus: chapter.exam_focus || {},
+      source_refs: cleanApiSourceRefs(chapter.source_refs || [], 2),
+    }));
+  const concepts = [...(courseModel.concepts || [])]
+    .map((concept) => ({ ...concept, summary_score: summaryConceptScore(concept, courseModel) }))
+    .sort((a, b) => Number(b.summary_score || 0) - Number(a.summary_score || 0))
+    .slice(0, limit.concepts)
+    .map((concept) => ({
+      name: concept.name,
+      chapter_id: concept.chapter_id,
+      description: clampText(concept.description || concept.source_refs?.[0]?.excerpt || "", 120),
+      score: Number(concept.summary_score || concept.importance_score || 0),
+      evidence: summarySelectionReasons(concept),
+      source_refs: cleanApiSourceRefs(concept.source_refs || [], 2),
+    }));
+  const formulas = [...(courseModel.formulas || [])]
+    .sort((a, b) => Number(b.exam_focus?.score || 0) - Number(a.exam_focus?.score || 0))
+    .slice(0, limit.formulas)
+    .map((formula) => ({
+      name: formula.name || "公式",
+      expression: wrapInlineFormula(formula.expression) || formula.expression,
+      chapter_id: formula.chapter_id,
+      conditions: cleanKnownText(formula.applicable_conditions, "回到来源页核对适用条件"),
+      common_misuses: (formula.common_misuses || []).filter((item) => item && item !== "unknown").slice(0, 3),
+      verification_status: formula.verification_status || formula.verification?.status || "unverified",
+      source_refs: cleanApiSourceRefs(formula.source_refs || [], 2),
+    }));
+  const problems = [...(courseModel.examples || []), ...(courseModel.homework_problems || [])]
+    .slice(0, limit.problems)
+    .map((problem) => ({
+      title: problem.title || problem.problem_number || "题目",
+      type: problem.example_id ? "example" : "homework",
+      text: clampText(problem.problem_text || "", 180),
+      related_concepts: (problem.related_concepts || []).slice(0, 5),
+      source_refs: cleanApiSourceRefs(problem.source_refs || [], 2),
+    }));
+  const mistakes = [...(courseModel.mistake_points || [])]
+    .sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0))
+    .slice(0, limit.mistakes)
+    .map((mistake) => ({
+      description: mistake.description,
+      severity: mistake.severity || "medium",
+      related_concepts: (mistake.related_concepts || []).slice(0, 5),
+      source_refs: cleanApiSourceRefs(mistake.source_refs || [], 2),
+    }));
+  const parseQuality = {
+    documents: (courseModel.documents || []).map((doc) => ({
+      file_name: doc.file_name,
+      type: doc.document_type,
+      unit_count: doc.unit_count,
+      quality: doc.parse_quality?.level || "",
+      score: doc.parse_quality?.score || 0,
+      counts: doc.parse_quality?.counts || {},
+      warnings: doc.parse_quality?.warnings || [],
+    })),
+    warnings: courseModel.warnings || [],
+  };
+  const context = {
+    course: courseModel.course || {},
+    course_label: apiCourseLabel(courseModel.course || {}),
+    stats: courseModel.stats || {},
+    exam_focus: courseModel.exam_focus || {},
+    parse_quality: parseQuality,
+    learning_pack: apiLearningPackSummary(courseModel.learning_pack, limit),
+    chapters,
+    concepts,
+    formulas,
+    problems,
+    mistakes,
+    evidence: collectApiEvidence(courseModel, docs, limit.evidence),
+  };
+  return truncateForModel(JSON.stringify(context, null, 2), options.maxChars || 42000);
 }
 
 function buildApiQuestionSeedContext(courseModel = {}, localQuestions = [], options = {}) {
@@ -2841,21 +2988,41 @@ function buildApiMistakeContext(courseModel = {}, mistake = {}, docs = []) {
 async function apiSimilarQuestions(db, course, mistake, docs, count) {
   const courseModel = courseKnowledgeModel(course || { name: "错题变式" }, docs);
   const localSeeds = localSimilarQuestions(mistake, docs, Math.max(count + 2, 6));
-  const context = truncateForModel(
-    [buildApiMistakeContext(courseModel, mistake, docs), buildApiQuestionSeedContext(courseModel, localSeeds, { limit: 8 })].join("\n\n"),
-    16000,
-  );
+  const context = buildApiStudyContext(courseModel, docs, { maxChars: 26000, concepts: 8, formulas: 8, problems: 6, mistakes: 6, evidence: 6 });
+  const mistakeContext = buildApiMistakeContext(courseModel, mistake, docs);
+  const seedContext = buildApiQuestionSeedContext(courseModel, localSeeds, { limit: 8 });
   const content = await callChatApi(
     db.settings,
     [
       {
         role: "system",
         content:
-          '你是 STEM 期末命题助教。根据错题生成同类型变式题。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目必须服务于考前复习，避免空泛概念题。',
+          '你是 STEM 期末命题助教。根据错题和结构化课件资料生成同类型变式题。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目必须服务于考前复习，避免空泛概念题。',
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n题目数量：${count}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。请保留同类题的解题入口，但更换数字、条件或问法。\n\n${context}`,
+        content: `科目：${course?.name || "未命名科目"}
+题目数量：${count}
+
+错题：
+- 问题：${mistake.question}
+- 参考答案：${mistake.answer}
+- 解析：${mistake.explanation || "无"}
+
+每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。
+要求：
+- 保留同类题的解题入口，但更换数字、条件或问法。
+- 至少生成 1 道与原错因相反或更深一层的变式题。
+- 解析必须说明第一步入口、公式适用条件或常见扣分点。
+
+结构化资料与本地题目种子：
+${context}
+
+错题近邻上下文：
+${mistakeContext}
+
+本地候选题骨架：
+${seedContext}`,
       },
     ],
     { type: "json_object" },
@@ -3003,9 +3170,9 @@ function cachedApiResponse(key) {
 function storeApiResponse(key, content) {
   apiResponseCache.set(key, { content, createdAt: Date.now() });
   while (apiResponseCache.size > API_CACHE_LIMIT) {
-      const oldestKey = apiResponseCache.keys().next().value;
-      apiResponseCache.delete(oldestKey);
-    }
+    const oldestKey = apiResponseCache.keys().next().value;
+    apiResponseCache.delete(oldestKey);
+  }
 }
 
 async function callChatApi(settings, messages, responseFormat, options = {}) {
@@ -3054,36 +3221,74 @@ async function callChatApi(settings, messages, responseFormat, options = {}) {
 }
 
 async function apiSummary(db, courseModel, docs, mindMap) {
-  const compactContext = truncateForModel(buildApiStudyContext(courseModel, docs, { conceptLimit: 16, formulaLimit: 14, problemLimit: 12 }), 18000);
+  const compactContext = truncateForModel(
+    buildApiStudyContext(courseModel, docs, { conceptLimit: 16, formulaLimit: 14, problemLimit: 12, mistakeLimit: 10 }),
+    22000,
+  );
   const localOutline = truncateForModel(localStructuredSummary(courseModel, mindMap), 9000);
   return callChatApi(db.settings, [
     {
       role: "system",
       content:
-        "你是 STEM 期末复习助教。请用中文输出严谨、可考试复习的 Markdown，强调定义、公式适用条件、典型题型、易错点。公式统一使用 `$...$` 包裹的类 LaTeX 形式，例如 `$\\sigma = \\frac{F_N}{A}$`。不要堆砌原文，优先输出高价值复习决策。",
+        "你是 STEM 期末复习助教。请用中文输出严谨、可考试复习的 Markdown，强调定义、公式适用条件、典型题型、易错点。公式统一使用 `$...$` 包裹的类 LaTeX 形式。不要堆砌原文，优先输出高价值复习决策。",
     },
     {
       role: "user",
-      content: `科目：${courseModel.course?.name || "未命名科目"}\n\n请基于结构化证据生成期末复习提纲，结构包含：知识框架、核心公式与适用条件、典型题型、解题流程、易错点、考前自测问题。控制篇幅，避免长段复制。\n\n${compactContext}\n\n## 本地提纲草稿（可优化但不要丢失证据）\n${localOutline}`,
+      content: `科目：${courseModel.course?.name || "未命名科目"}
+本地图谱规模：${mindMap?.stats?.nodes || 0} 个节点 / ${mindMap?.stats?.edges || 0} 条关系。
+
+请生成一份能帮助我理解 PPT 的复习总结，固定包含：
+1. 核心考点清单：按考试价值排序，每点说明为什么重要、来源页/页码线索。
+2. 重难点拆解：说明难在哪里、先理解什么、容易和什么混淆。
+3. 公式与适用条件：不要只列公式，必须写变量含义、适用前提、常见误用。
+4. 典型题型入口：把 PPT 中的例题/作业抽象成题型和第一步解题动作。
+5. 易错/扣分点：转化成考场检查清单。
+6. 考前自测：给 6-8 个短问题，覆盖概念、公式条件、计算入口和错因诊断。
+7. 资料不足提醒：如果资料显示公式/例题不足，明确提示可能是图片型 PPT 或解析不足。
+
+结构化证据：
+${compactContext}
+
+本地提纲草稿（可优化但不要丢失证据）：
+${localOutline}`,
     },
   ]);
 }
 
 async function apiQuiz(db, courseModel, docs, body, localResult) {
-  const compactContext = truncateForModel(buildApiStudyContext(courseModel, docs, { conceptLimit: 12, formulaLimit: 10, problemLimit: 8, mistakeLimit: 8 }), 14000);
-  const seedContext = truncateForModel(buildApiQuestionSeedContext(courseModel, localResult.questions, { limit: 12 }), 9000);
   const count = Math.max(3, Math.min(Number(body.count || 8), 20));
+  const compactContext = truncateForModel(
+    buildApiStudyContext(courseModel, docs, { conceptLimit: 12, formulaLimit: 10, problemLimit: 8, mistakeLimit: 8 }),
+    16000,
+  );
+  const seedContext = truncateForModel(buildApiQuestionSeedContext(courseModel, localResult.questions, { limit: 12 }), 9000);
   const content = await callChatApi(
     db.settings,
     [
       {
         role: "system",
         content:
-          '你是 STEM 期末命题助教。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目要接近课件和作业风格，答案和解析要清楚，优先覆盖公式、题型入口和易错点。',
+          '你是 STEM 期末命题助教。只输出 JSON 对象，格式为 {"questions": [...]}，不要输出 Markdown。题目必须围绕给定考点、公式适用条件、例题/作业题型和易错点生成。',
       },
       {
         role: "user",
-        content: `科目：${courseModel.course?.name || "未命名科目"}\n题目数量：${count}\n题型偏好：${(body.types || []).join(", ") || "choice, blank, short, calculation"}\n难度：${body.difficulty || "混合"}\n\n每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。请在本地候选题基础上提升表达、数值条件和解析质量，不要生成与资料无关的题。\n\n${compactContext}\n\n${seedContext}`,
+        content: `科目：${courseModel.course?.name || "未命名科目"}
+题目数量：${count}
+题型偏好：${(body.types || []).join(", ") || "choice, blank, short, calculation"}
+难度：${body.difficulty || "混合"}
+
+每道题字段：type, difficulty, stem, options, answer, explanation。options 没有则用空数组。
+要求：
+- 至少包含 1 道公式适用条件题、1 道计算题、1 道错因诊断题；资料足够时包含综合题。
+- 题目要像课件/作业同类型题，不要生成泛泛背诵题。
+- 解析要说明第一步为什么这样做，以及常见扣分点。
+- 如果某题基于公式，必须写公式适用条件，不要只给代入结果。
+
+结构化证据：
+${compactContext}
+
+本地候选题骨架（可参考题型，不要逐字照抄）：
+${seedContext}`,
       },
     ],
     { type: "json_object" },
@@ -3102,20 +3307,44 @@ async function apiQuiz(db, courseModel, docs, body, localResult) {
 }
 
 function parseJsonFromModel(content) {
-  const trimmed = content.trim();
+  const trimmed = String(content || "").trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
-  const candidate = fenced ? fenced[1] : trimmed;
+  const direct = fenced ? fenced[1].trim() : trimmed;
   try {
-    return JSON.parse(candidate);
+    return JSON.parse(direct);
   } catch {
-    const objectStart = candidate.indexOf("{");
-    const objectEnd = candidate.lastIndexOf("}");
-    const arrayStart = candidate.indexOf("[");
-    const arrayEnd = candidate.lastIndexOf("]");
-    if (objectStart >= 0 && objectEnd > objectStart) return JSON.parse(candidate.slice(objectStart, objectEnd + 1));
-    if (arrayStart >= 0 && arrayEnd > arrayStart) return JSON.parse(candidate.slice(arrayStart, arrayEnd + 1));
+    const candidate = extractJsonCandidate(direct);
+    if (candidate) return JSON.parse(candidate);
     throw new Error("API 返回内容不是可解析的 JSON。");
   }
+}
+
+function extractJsonCandidate(value) {
+  const textValue = String(value || "");
+  const starts = [textValue.indexOf("{"), textValue.indexOf("[")].filter((index) => index >= 0).sort((a, b) => a - b);
+  for (const start of starts) {
+    const open = textValue[start];
+    const close = open === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < textValue.length; index += 1) {
+      const char = textValue[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === open) depth += 1;
+      else if (char === close) {
+        depth -= 1;
+        if (depth === 0) return textValue.slice(start, index + 1);
+      }
+    }
+  }
+  return "";
 }
 
 async function apiAsk(db, course, docs, question) {
@@ -3981,6 +4210,9 @@ module.exports = {
   getImportantSentences,
   getFormulaLines,
   normalizeText,
+  buildApiStudyContext,
+  normalizeApiQuestion,
+  parseJsonFromModel,
   buildCourseKnowledgeModel: courseKnowledgeModel,
   buildDocumentKnowledgeModel,
   extractProblemAnchors,
