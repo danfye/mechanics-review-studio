@@ -8,7 +8,7 @@
     editingDocumentId: null,
     previewDocumentId: null,
     previewUnitIndex: 0,
-    activeTab: "documents",
+    activeTab: "dashboard",
     currentQuiz: [],
     currentQuizEvaluation: null,
     currentCourseModel: null,
@@ -129,6 +129,7 @@
     const view = $(`#view-${tab}`);
     if (!button || !view) return false;
     state.activeTab = tab;
+    document.body.dataset.activeTab = tab;
     $$(".tab-button").forEach((item) => {
       const selected = item === button;
       item.classList.toggle("active", selected);
@@ -239,6 +240,7 @@
     renderCourses();
     renderStats();
     renderTopbar();
+    renderDashboard();
     renderDocuments();
     renderMistakes();
     renderPlanner();
@@ -246,6 +248,188 @@
     renderSolver();
     renderSettings();
     iconRefresh();
+  }
+
+  function renderDashboard() {
+    const target = $("#dashboard-root");
+    if (!target) return;
+    const course = currentCourse();
+    const docs = courseDocuments();
+    const docViews = courseDocumentViews();
+    const mistakes = courseMistakes();
+    const sessions = courseSessions();
+    const solved = courseSolvedQuestions();
+    const stats = courseView()?.stats || {};
+    const selectedCount = selectedDocumentIds().length;
+    const recentDocs = (docViews.length ? docViews : docs)
+      .slice(0, 4)
+      .map((doc) => {
+        const sourceDoc = state.index.documentsById.get(doc.id) || doc;
+        const quality = doc.parseQuality || sourceDoc.parseQuality || sourceDoc.knowledgeModel?.parse_quality;
+        const pack = doc.learningPack || sourceDoc.learningPack || sourceDoc.knowledgeModel?.learning_pack;
+        return `<article class="dashboard-doc-card">
+          <div>
+            <span class="chip">${escapeHtml(doc.type || sourceDoc.type || "FILE")}</span>
+            ${quality ? `<span class="chip ${quality.level === "good" ? "good" : quality.level === "weak" ? "warn" : ""}">${escapeHtml(quality.label || "已解析")}</span>` : '<span class="chip warn">待结构化</span>'}
+          </div>
+          <h4>${escapeHtml(doc.originalName || sourceDoc.originalName || "资料")}</h4>
+          <p>${escapeHtml(conciseText(pack?.summary || doc.digest || sourceDoc.text || "进入资料工作区查看定位与片段。", 76))}</p>
+        </article>`;
+      })
+      .join("");
+    const moduleCards = [
+      {
+        tab: "documents",
+        icon: "folder-open",
+        title: "资料工作区",
+        label: `${Number(stats.documents ?? docs.length)} 份资料`,
+        text: "导入课件、粘贴例题、检查分页定位和资料结构。",
+        cta: docs.length ? "管理资料" : "开始导入",
+      },
+      {
+        tab: "summary",
+        icon: "network",
+        title: "知识地图",
+        label: `${Number(stats.learningPacks || 0)} 个知识包`,
+        text: "把概念、公式、题型和易错点汇总成视觉化复习图。",
+        cta: "生成地图",
+      },
+      {
+        tab: "planner",
+        icon: "calendar-check",
+        title: "复习计划",
+        label: `${Number(stats.sessions ?? sessions.length)} 次复盘`,
+        text: "按考试日期、资料章节和错题情况安排下一步。",
+        cta: "规划复习",
+      },
+      {
+        tab: "cram",
+        icon: "flame",
+        title: "冲刺包",
+        label: `${Number(stats.mistakes ?? mistakes.length)} 条错题`,
+        text: "把优先专题、必背公式、易错清单和限时题合成一张清单。",
+        cta: "进入冲刺",
+      },
+      {
+        tab: "quiz",
+        icon: "pencil-ruler",
+        title: "刷题",
+        label: `${Number(stats.learningPackDrills || 0)} 个训练入口`,
+        text: "按题型和难度生成同类型题，快速验证掌握度。",
+        cta: "开始刷题",
+      },
+      {
+        tab: "solver",
+        icon: "calculator",
+        title: "解题台",
+        label: `${Number(solved.length || 0)} 道历史题`,
+        text: "拆解题干、关键公式和易错步骤，并固化为复习记忆。",
+        cta: "打开解题",
+      },
+    ]
+      .map(
+        (card) => `<button class="dashboard-card" type="button" data-dashboard-tab="${escapeAttribute(card.tab)}">
+          <span class="dashboard-card-icon"><i data-lucide="${escapeAttribute(card.icon)}"></i></span>
+          <span class="dashboard-card-copy">
+            <small>${escapeHtml(card.label)}</small>
+            <strong>${escapeHtml(card.title)}</strong>
+            <em>${escapeHtml(card.text)}</em>
+          </span>
+          <span class="dashboard-card-cta">${escapeHtml(card.cta)}<i data-lucide="arrow-right"></i></span>
+        </button>`,
+      )
+      .join("");
+    const quickStats = [
+      ["资料", Number(stats.documents ?? docs.length), "folder-open"],
+      ["知识包", Number(stats.learningPacks || 0), "package-check"],
+      ["训练", Number(stats.learningPackDrills || 0), "pencil-ruler"],
+      ["错题", Number(stats.mistakes ?? mistakes.length), "bookmark-x"],
+      ["复盘", Number(stats.sessions ?? sessions.length), "history"],
+    ]
+      .map(
+        ([label, value, icon]) => `<span>
+          <i data-lucide="${escapeAttribute(icon)}"></i>
+          <strong>${Number(value || 0).toLocaleString("zh-CN")}</strong>
+          <em>${escapeHtml(label)}</em>
+        </span>`,
+      )
+      .join("");
+    const nextStatus = state.currentPlan?.courseId === state.currentCourseId && state.currentPlan?.nextReview
+      ? state.currentPlan.nextReview
+      : null;
+    const cramStatus = state.currentCramPack?.courseId === state.currentCourseId ? state.currentCramPack.summary : null;
+    target.innerHTML = `<section class="dashboard-hero">
+      <div class="dashboard-hero-copy">
+        <span class="map-label">视觉总览</span>
+        <h3>${escapeHtml(course?.name || "先新建一个科目")}</h3>
+        <p>${escapeHtml(course ? `已选择 ${selectedCount} 份资料作为生成范围。` : "创建科目并导入资料后，这里会显示复习总览。")}</p>
+        <div class="dashboard-hero-actions">
+          <button class="primary-button" type="button" data-dashboard-tab="documents"><i data-lucide="upload-cloud"></i>导入资料</button>
+          <button class="secondary-button" type="button" data-dashboard-tab="summary"><i data-lucide="sparkles"></i>生成知识地图</button>
+        </div>
+      </div>
+      <div class="dashboard-stat-grid">${quickStats}</div>
+    </section>
+    <section class="dashboard-layout">
+      <div class="dashboard-main">
+        <div class="section-heading">
+          <h3>复习模块</h3>
+          <span class="muted">从总览进入具体工作区</span>
+        </div>
+        <div class="dashboard-card-grid">${moduleCards}</div>
+      </div>
+      <aside class="dashboard-side">
+        <article class="dashboard-panel">
+          <div class="section-heading">
+            <h3>当前状态</h3>
+            <span class="muted">按当前科目</span>
+          </div>
+          <div class="dashboard-status-list">
+            <button type="button" data-dashboard-tab="planner">
+              <span>下一步</span>
+              <strong>${escapeHtml(nextStatus?.title || "尚未生成复习计划")}</strong>
+              <small>${escapeHtml(nextStatus?.nextAction ? conciseText(nextStatus.nextAction, 58) : "进入复习计划生成下一步。")}</small>
+            </button>
+            <button type="button" data-dashboard-tab="cram">
+              <span>冲刺包</span>
+              <strong>${cramStatus ? `${Number(cramStatus.focusTopicCount || 0)} 个专题 · ${Number(cramStatus.drillQuestionCount || 0)} 道题` : "尚未生成冲刺包"}</strong>
+              <small>${cramStatus ? `${Number(cramStatus.estimatedMinutes || 0)} 分钟执行清单` : "进入冲刺包生成考前清单。"}</small>
+            </button>
+          </div>
+        </article>
+        <article class="dashboard-panel">
+          <div class="section-heading">
+            <h3>最近资料</h3>
+            <button class="secondary-button" type="button" data-dashboard-tab="documents"><i data-lucide="folder-open"></i>资料区</button>
+          </div>
+          <div class="dashboard-doc-list">${recentDocs || '<p class="muted">暂无资料。进入资料区导入 PPT、PDF 或文字例题。</p>'}</div>
+        </article>
+      </aside>
+    </section>`;
+    renderMathIn(target);
+  }
+
+  function initParticleField() {
+    const field = $("#particle-field");
+    if (!field || field.dataset.ready === "true") return;
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const particleCount = prefersReducedMotion ? 18 : 58;
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < particleCount; index += 1) {
+      const particle = document.createElement("span");
+      const size = 1.5 + Math.random() * 3.8;
+      particle.style.setProperty("--x", `${Math.random() * 100}%`);
+      particle.style.setProperty("--y", `${Math.random() * 100}%`);
+      particle.style.setProperty("--size", `${size}px`);
+      particle.style.setProperty("--delay", `${Math.random() * -24}s`);
+      particle.style.setProperty("--duration", `${18 + Math.random() * 20}s`);
+      particle.style.setProperty("--opacity", `${0.28 + Math.random() * 0.48}`);
+      particle.style.setProperty("--drift-x", `${Math.random() * 80 - 40}px`);
+      particle.style.setProperty("--drift-y", `${Math.random() * 90 - 45}px`);
+      fragment.appendChild(particle);
+    }
+    field.appendChild(fragment);
+    field.dataset.ready = "true";
   }
 
   function renderCourses() {
@@ -2882,6 +3066,12 @@
       });
     });
 
+    $("#dashboard-root")?.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-dashboard-tab]");
+      if (!trigger) return;
+      setActiveTab(trigger.dataset.dashboardTab);
+    });
+
     document.addEventListener("click", (event) => {
       const button = event.target.closest(".source-ref-button");
       if (!button) return;
@@ -3474,10 +3664,12 @@
   }
 
   async function boot() {
+    initParticleField();
     bindEvents();
     const data = await api("/api/state");
     setStateData(data);
     keepValidCourse();
+    setActiveTab(state.activeTab, { renderIcons: false });
     render();
   }
 

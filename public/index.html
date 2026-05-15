@@ -7,6 +7,9 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="ambient-layer" aria-hidden="true">
+      <div id="particle-field" class="particle-field"></div>
+    </div>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -66,37 +69,9 @@
           </div>
         </header>
 
-        <section class="upload-band">
-          <form id="upload-form" class="upload-form">
-            <input id="file-input" type="file" name="files" multiple accept=".pptx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md" />
-            <label for="file-input" class="upload-target">
-              <i data-lucide="upload-cloud"></i>
-              <span>上传资料</span>
-            </label>
-            <button type="submit" class="primary-button">
-              <i data-lucide="file-up"></i>
-              导入
-            </button>
-          </form>
-          <details class="text-import-panel">
-            <summary><i data-lucide="text-cursor-input"></i>粘贴例题</summary>
-            <form id="text-import-form" class="text-import-form">
-              <label>
-                资料名称
-                <input id="text-import-name" placeholder="如 轴向拉压例题.txt" autocomplete="off" />
-              </label>
-              <label>
-                例题文本
-                <textarea id="text-import-content" placeholder="例题 1：已知...&#10;求：...&#10;解：..."></textarea>
-              </label>
-              <button type="submit" class="primary-button"><i data-lucide="plus"></i>导入文字</button>
-            </form>
-          </details>
-          <p id="upload-note" class="muted status-note" aria-live="polite"></p>
-        </section>
-
         <div class="tabs" role="tablist" aria-label="功能">
-          <button id="tab-documents" class="tab-button active" data-tab="documents" role="tab" aria-controls="view-documents" aria-selected="true" tabindex="0"><i data-lucide="folder-open"></i>资料</button>
+          <button id="tab-dashboard" class="tab-button active" data-tab="dashboard" role="tab" aria-controls="view-dashboard" aria-selected="true" tabindex="0"><i data-lucide="layout-dashboard"></i>总览</button>
+          <button id="tab-documents" class="tab-button" data-tab="documents" role="tab" aria-controls="view-documents" aria-selected="false" tabindex="-1"><i data-lucide="folder-open"></i>资料</button>
           <button id="tab-summary" class="tab-button" data-tab="summary" role="tab" aria-controls="view-summary" aria-selected="false" tabindex="-1"><i data-lucide="list-checks"></i>知识点</button>
           <button id="tab-planner" class="tab-button" data-tab="planner" role="tab" aria-controls="view-planner" aria-selected="false" tabindex="-1"><i data-lucide="calendar-check"></i>复习计划</button>
           <button id="tab-cram" class="tab-button" data-tab="cram" role="tab" aria-controls="view-cram" aria-selected="false" tabindex="-1"><i data-lucide="flame"></i>冲刺包</button>
@@ -107,7 +82,39 @@
           <button id="tab-settings" class="tab-button" data-tab="settings" role="tab" aria-controls="view-settings" aria-selected="false" tabindex="-1"><i data-lucide="settings"></i>设置</button>
         </div>
 
-        <section id="view-documents" class="view active-view" role="tabpanel" aria-labelledby="tab-documents">
+        <section id="view-dashboard" class="view active-view" role="tabpanel" aria-labelledby="tab-dashboard">
+          <div id="dashboard-root" class="dashboard-root"></div>
+        </section>
+
+        <section id="view-documents" class="view" role="tabpanel" aria-labelledby="tab-documents" hidden>
+          <section class="upload-band workspace-upload">
+            <form id="upload-form" class="upload-form">
+              <input id="file-input" type="file" name="files" multiple accept=".pptx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md" />
+              <label for="file-input" class="upload-target">
+                <i data-lucide="upload-cloud"></i>
+                <span>上传资料</span>
+              </label>
+              <button type="submit" class="primary-button">
+                <i data-lucide="file-up"></i>
+                导入
+              </button>
+            </form>
+            <details class="text-import-panel">
+              <summary><i data-lucide="text-cursor-input"></i>粘贴例题</summary>
+              <form id="text-import-form" class="text-import-form">
+                <label>
+                  资料名称
+                  <input id="text-import-name" placeholder="如 轴向拉压例题.txt" autocomplete="off" />
+                </label>
+                <label>
+                  例题文本
+                  <textarea id="text-import-content" placeholder="例题 1：已知...&#10;求：...&#10;解：..."></textarea>
+                </label>
+                <button type="submit" class="primary-button"><i data-lucide="plus"></i>导入文字</button>
+              </form>
+            </details>
+            <p id="upload-note" class="muted status-note" aria-live="polite"></p>
+          </section>
           <div class="split-view">
             <div>
               <div class="section-heading">
