@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.cjs",
     "accuracy": "node scripts/accuracy-report.cjs",
+    "harness:api": "node scripts/api-harness.cjs",
     "open": "node scripts/launch-local.cjs",
     "make:mac-app": "node scripts/create-macos-app.cjs",
     "package:share": "node scripts/package-share.cjs",

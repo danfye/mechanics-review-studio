@@ -1,0 +1,44 @@
+{
+  "id": "solution-mechanics-axial",
+  "type": "solution",
+  "course": {
+    "id": "harness_course_mechanics",
+    "name": "材料力学"
+  },
+  "documents": [
+    {
+      "id": "harness_doc_axial_notes",
+      "courseId": "harness_course_mechanics",
+      "originalName": "轴向拉压讲义.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n轴向拉压模型：外力合力作用线与杆件轴线重合，杆沿轴线伸长或缩短。\n\n## 第 2 页\n截面法求轴力：截开、取一段、加内力、列平衡方程。轴力 F_N 以拉为正，以压为负。\n\n## 第 3 页\n横截面正应力公式 σ = F_N / A。公式适用于远离集中力作用点、截面均匀受力的等截面直杆。\n\n## 第 4 页\n轴向伸长量 ΔL = F_N L / (E A)。计算时要统一单位，并确认材料仍在线弹性范围内。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "轴向拉压模型：外力合力作用线与杆件轴线重合，杆沿轴线伸长或缩短。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "截面法求轴力：截开、取一段、加内力、列平衡方程。轴力 F_N 以拉为正，以压为负。"
+        },
+        {
+          "label": "第 3 页",
+          "text": "横截面正应力公式 σ = F_N / A。公式适用于远离集中力作用点、截面均匀受力的等截面直杆。"
+        },
+        {
+          "label": "第 4 页",
+          "text": "轴向伸长量 ΔL = F_N L / (E A)。计算时要统一单位，并确认材料仍在线弹性范围内。"
+        }
+      ]
+    }
+  ],
+  "question": "等截面直杆面积 A、长度 L、弹性模量 E，受到轴向拉力 F。求横截面正应力和轴向伸长量，并说明使用公式前要检查什么条件。",
+  "expected": {
+    "relatedConcepts": ["轴向拉压", "轴力", "正应力", "胡克定律"],
+    "formulaTerms": ["F_N", "A", "L", "E"],
+    "reviewCardTypes": ["method", "formula", "pitfall", "drill"],
+    "minimumQualityScore": 75,
+    "minimumReviewCards": 4,
+    "requireSourceRefs": true
+  }
+}
