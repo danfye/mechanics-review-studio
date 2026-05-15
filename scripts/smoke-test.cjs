@@ -37,7 +37,7 @@ function request(path, method = "GET", body) {
 
 (async () => {
   const page = await request("/");
-  if (page.status !== 200 || !String(page.data).includes("力学复习台")) {
+  if (page.status !== 200 || !String(page.data).includes("理工科复习台")) {
     throw new Error(`page failed: ${page.status}`);
   }
   console.log("page ok");

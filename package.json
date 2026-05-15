@@ -1,8 +1,8 @@
 {
-  "name": "mechanics-review-studio",
-  "version": "0.1.0",
+  "name": "stem-review-studio",
+  "version": "0.2.0",
   "private": true,
-  "description": "Local-first final-week review assistant for mechanics courses.",
+  "description": "Local-first final-week review assistant for STEM courses.",
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs",

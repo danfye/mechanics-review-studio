@@ -1,10 +1,55 @@
 const http = require("node:http");
+const fs = require("node:fs");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const ROOT = path.join(__dirname, "..");
 const PORTS = [4173, 4174, 4175, 4176, 4177, 4178];
 const HOST = "127.0.0.1";
+const LOG_DIR = path.join(ROOT, "data", "logs");
+const LOG_FILE = path.join(LOG_DIR, "launcher.log");
+
+function findNodeBinary() {
+  const candidates = [
+    process.execPath,
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+    "/usr/bin/node",
+    path.join(process.env.HOME || "", ".nvm", "current", "bin", "node"),
+    path.join(process.env.HOME || "", ".volta", "bin", "node"),
+    path.join(process.env.HOME || "", ".fnm", "node-versions", "current", "installation", "bin", "node"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // Try the next common install path.
+    }
+  }
+  return process.execPath;
+}
+
+function appendLog(message) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${message}\n`);
+  } catch {
+    // Logging should never prevent the app from opening.
+  }
+}
+
+function notify(title, message, critical = false) {
+  appendLog(`${title}: ${message}`);
+  if (process.platform !== "darwin") return;
+  const script = `display alert ${JSON.stringify(title)} message ${JSON.stringify(message)}${critical ? " as critical" : ""}`;
+  spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+}
+
+function fail(title, message) {
+  console.error(`${title}：${message}`);
+  notify(title, `${message}\n\n日志位置：${LOG_FILE}`, true);
+  process.exit(1);
+}
 
 function requestJson(port, pathname) {
   return new Promise((resolve) => {
@@ -69,34 +114,55 @@ async function findFreePort() {
 }
 
 async function main() {
+  appendLog(`launcher start: root=${ROOT}`);
+  if (!fs.existsSync(path.join(ROOT, "server.cjs"))) {
+    fail("项目文件不完整", "没有找到 server.cjs。请确认应用文件夹没有被拆开或移动。");
+  }
+  if (!fs.existsSync(path.join(ROOT, "node_modules"))) {
+    fail("依赖未安装", "没有找到 node_modules。请先在项目目录运行 npm install，或重新生成体验包。");
+  }
+
   const existingPort = await findExistingApp();
   if (existingPort) {
     const url = `http://${HOST}:${existingPort}`;
     console.log(`复习台已经在运行，正在打开 ${url}`);
+    appendLog(`existing app found: ${url}`);
     openBrowser(url);
     return;
   }
 
   const port = await findFreePort();
   if (!port) {
-    console.error("4173-4178 端口都不可用，请关闭其他本地服务后再试。");
-    process.exit(1);
+    fail("端口不可用", "4173-4178 端口都不可用，请关闭其他本地服务后再试。");
   }
 
   const url = `http://${HOST}:${port}`;
   console.log(`正在启动复习台：${url}`);
+  appendLog(`starting server: ${url}`);
 
-  const child = spawn(process.execPath, ["server.cjs"], {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const logFd = fs.openSync(LOG_FILE, "a");
+  const stdio = process.stdout.isTTY ? "inherit" : ["ignore", logFd, logFd];
+
+  const nodeBin = findNodeBinary();
+  appendLog(`using node: ${nodeBin}`);
+  const child = spawn(nodeBin, ["server.cjs"], {
     cwd: ROOT,
-    env: { ...process.env, HOST, PORT: String(port) },
-    stdio: "inherit",
+    env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`, HOST, PORT: String(port) },
+    stdio,
   });
 
-  child.on("exit", (code) => process.exit(code || 0));
+  child.on("error", (error) => {
+    fail("启动失败", error.message || String(error));
+  });
+  child.on("exit", (code) => {
+    appendLog(`server exit: code=${code ?? 0}`);
+    if (code) notify("复习台已退出", `服务进程异常退出，退出码：${code}\n\n日志位置：${LOG_FILE}`, true);
+    process.exit(code || 0);
+  });
   setTimeout(() => openBrowser(url), 900);
 }
 
 main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
+  fail("启动失败", error.message || String(error));
 });

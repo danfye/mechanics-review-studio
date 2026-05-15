@@ -33,8 +33,10 @@
     const workspaceCourses = workspaceData.courses || [];
     const workspaceDocuments = workspaceData.documents || [];
     const documentsByCourseAndName = new Map();
+    const unitLookupsByDocumentId = new Map();
     for (const doc of documents) {
       if (doc.courseId && doc.originalName) documentsByCourseAndName.set(courseDocumentNameKey(doc.courseId, doc.originalName), doc);
+      if (doc.id) unitLookupsByDocumentId.set(doc.id, buildDocumentUnitLookup(doc));
     }
     return {
       coursesById: mapById(courses),
@@ -47,6 +49,7 @@
       sessionsByCourseId: groupByKey(sessions, (session) => session.courseId),
       solvedQuestionsByCourseId: groupByKey(solvedQuestions, (item) => item.courseId),
       documentsByCourseAndName,
+      unitLookupsByDocumentId,
     };
   }
 
@@ -68,6 +71,20 @@
       groups.set(key, group);
     }
     return groups;
+  }
+
+  function buildDocumentUnitLookup(doc) {
+    const labelToIndex = new Map();
+    const pageToIndex = new Map();
+    const compactUnits = documentUnits(doc).map((unit, index) => {
+      const compactLabel = compactText(unit.label || "");
+      const compactBody = compactText(unit.text || "");
+      if (compactLabel && !labelToIndex.has(compactLabel)) labelToIndex.set(compactLabel, index);
+      const pageNumber = unitPageNumber(unit, index);
+      if (pageNumber && !pageToIndex.has(pageNumber)) pageToIndex.set(pageNumber, index);
+      return { compactLabel, compactBody };
+    });
+    return { labelToIndex, pageToIndex, compactUnits };
   }
 
   function courseDocumentNameKey(courseId, fileName) {
@@ -623,26 +640,26 @@
     if (rawIndex !== undefined && rawIndex !== null && rawIndex !== "" && Number.isInteger(Number(rawIndex))) return Number(rawIndex);
     const doc = sourceRefDocument(ref);
     if (!doc) return 0;
-    const units = documentUnits(doc);
+    const lookup = state.index.unitLookupsByDocumentId.get(doc.id) || buildDocumentUnitLookup(doc);
     const labels = [ref?.unit_label, ref?.label].map(compactText).filter(Boolean);
     for (const label of labels) {
-      const exactIndex = units.findIndex((unit) => compactText(unit.label) === label);
-      if (exactIndex >= 0) return exactIndex;
+      const exactIndex = lookup.labelToIndex.get(label);
+      if (Number.isInteger(exactIndex)) return exactIndex;
     }
     const pageNumber = Number(ref?.page_number || ref?.pageNumber || 0);
     if (pageNumber) {
-      const pageIndex = units.findIndex((unit, index) => unitPageNumber(unit, index) === pageNumber);
-      if (pageIndex >= 0) return pageIndex;
+      const pageIndex = lookup.pageToIndex.get(pageNumber);
+      if (Number.isInteger(pageIndex)) return pageIndex;
     }
     const locator = compactText(ref?.anchor_label || ref?.locator_label || "");
     if (locator) {
-      const locatorIndex = units.findIndex((unit) => compactText(unit.label || "").includes(locator) || compactText(unit.text || "").includes(locator));
+      const locatorIndex = lookup.compactUnits.findIndex((unit) => unit.compactLabel.includes(locator) || unit.compactBody.includes(locator));
       if (locatorIndex >= 0) return locatorIndex;
     }
     const excerpt = compactText(ref?.excerpt || ref?.anchor_text || "");
     if (excerpt.length >= 12) {
       const shortExcerpt = excerpt.slice(0, Math.min(48, excerpt.length));
-      const excerptIndex = units.findIndex((unit) => compactText(unit.text || "").includes(shortExcerpt));
+      const excerptIndex = lookup.compactUnits.findIndex((unit) => unit.compactBody.includes(shortExcerpt));
       if (excerptIndex >= 0) return excerptIndex;
     }
     return 0;
@@ -1326,12 +1343,12 @@
     });
     $("#api-base-url").value = settings.apiBaseUrl || "";
     renderApiModelSelect(settings.model || "");
-    $("#api-key").placeholder = settings.apiKey ? "已保存，留空不修改" : "留空表示不使用 API";
+    $("#api-key").placeholder = settings.apiKey ? "已保存到本机密钥文件，留空不修改" : "留空表示不使用 API";
     $("#clear-api-key").checked = false;
     const status = $("#api-connection-status");
     if (status && !status.dataset.pinned) {
       status.className = "settings-status muted";
-      status.textContent = settings.apiKey ? "已保存 API Key，可检测模型或测试连接。" : "先填写 Base URL 和 API Key，然后检测模型。";
+      status.textContent = settings.apiKey ? "API Key 已保存到本机密钥文件，可检测模型或测试连接。" : "先填写 Base URL 和 API Key，然后检测模型。";
     }
   }
 
@@ -2134,11 +2151,12 @@
 
   function renderCompactGraphConnections(map) {
     const nodes = map.nodes || [];
+    const nodesById = map.nodesById || new Map(nodes.map((node) => [node.id, node]));
     return (map.edges || [])
       .slice(0, 8)
       .map((edge) => {
-        const from = nodes.find((node) => node.id === edge.from_id);
-        const to = nodes.find((node) => node.id === edge.to_id);
+        const from = nodesById.get(edge.from_id);
+        const to = nodesById.get(edge.to_id);
         return `<li><span>${renderTextWithInlineMath(cleanDisplayTitle(from?.label || edge.from_id))}</span> <strong>${escapeHtml(relationLabel(edge.relation))}</strong> <span>${renderTextWithInlineMath(cleanDisplayTitle(to?.label || edge.to_id))}</span></li>`;
       })
       .join("");
@@ -2147,6 +2165,7 @@
   function renderGraphMindMap(map, target = $("#knowledge-map")) {
     const nodes = map.nodes || [];
     const edges = map.edges || [];
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
     if (!nodes.length) {
       target.className = "knowledge-map empty-state";
       target.textContent = "还没有足够内容生成知识图谱。";
@@ -2165,8 +2184,8 @@
     const edgeList = edges
       .slice(0, 18)
       .map((edge) => {
-        const from = nodes.find((node) => node.id === edge.from_id);
-        const to = nodes.find((node) => node.id === edge.to_id);
+        const from = nodesById.get(edge.from_id);
+        const to = nodesById.get(edge.to_id);
         return `<li><span>${renderTextWithInlineMath(cleanDisplayTitle(from?.label || edge.from_id))}</span> <strong>${escapeHtml(relationLabel(edge.relation))}</strong> <span>${renderTextWithInlineMath(cleanDisplayTitle(to?.label || edge.to_id))}</span></li>`;
       })
       .join("");

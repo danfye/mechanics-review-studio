@@ -1,6 +1,9 @@
 const path = require("node:path");
 const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const os = require("node:os");
 const { createRuntimeRequire } = require("../lib/server/runtime-require.cjs");
+const { createApiKeyStore } = require("../lib/server/api-key-store.cjs");
 const {
   toLatexFormula,
   extractTextFromFile,
@@ -21,6 +24,10 @@ const {
   buildApiStudyContext,
   normalizeApiQuestion,
   parseJsonFromModel,
+  aiPptTeachingSkillPrompt,
+  aiSolutionSkillPrompt,
+  pptTeachingSummaryRequest,
+  solutionSkillRequest,
 } = require("../server.cjs");
 const {
   localSolveQuestion,
@@ -834,6 +841,29 @@ async function makePdf() {
     throw new Error(`Workspace document outline missed example anchor: ${JSON.stringify(workspaceDoc?.outline)}`);
   }
 
+  const tempSecretDir = await fsp.mkdtemp(path.join(os.tmpdir(), "stem-review-secret-"));
+  try {
+    const secretPath = path.join(tempSecretDir, "api-key.json");
+    const apiKeyStore = createApiKeyStore({ filePath: secretPath });
+    await apiKeyStore.saveApiKey("super-secret-key");
+    if (apiKeyStore.getApiKey() !== "super-secret-key") {
+      throw new Error("API key store failed to read back saved key");
+    }
+    const storedSecret = JSON.parse(fs.readFileSync(secretPath, "utf8"));
+    if (storedSecret.apiKey !== "super-secret-key") {
+      throw new Error("API key store wrote an unexpected payload");
+    }
+    await apiKeyStore.clearApiKey();
+    if (apiKeyStore.hasApiKey()) {
+      throw new Error("API key store failed to clear key");
+    }
+    if (fs.existsSync(secretPath)) {
+      throw new Error("API key store did not remove the secret file");
+    }
+  } finally {
+    await fsp.rm(tempSecretDir, { recursive: true, force: true });
+  }
+
   const solved = localSolveQuestion(
     course,
     docs,
@@ -874,6 +904,24 @@ async function makePdf() {
   }
   if (!normalizedApiQuestion.sourceDocumentIds.includes("doc_1")) {
     throw new Error(`API question sourceDocumentIds compatibility failed: ${JSON.stringify(normalizedApiQuestion)}`);
+  }
+
+  const pptSkillPrompt = aiPptTeachingSkillPrompt();
+  const pptSkillRequest = pptTeachingSummaryRequest("材料力学", { nodes: 8, edges: 7 });
+  for (const required of ["ppt_zero_to_mastery_v1", "从 0 学会", "掌握标准", "复习记忆", "直接阅读图片"]) {
+    if (!pptSkillPrompt.includes(required)) throw new Error(`PPT teaching skill prompt missed: ${required}`);
+  }
+  for (const required of ["先修知识", "学习主线", "掌握检测", "可固化复习记忆"]) {
+    if (!pptSkillRequest.includes(required)) throw new Error(`PPT teaching skill request missed: ${required}`);
+  }
+
+  const solutionSkillPrompt = aiSolutionSkillPrompt();
+  const solutionRequest = solutionSkillRequest("材料力学", "简支梁跨中集中力 P，求最大弯矩。");
+  for (const required of ["stem_exam_teacher_v1", "只输出 JSON 对象", "reviewCards", "sourceRefs", "固化记忆"]) {
+    if (!solutionSkillPrompt.includes(required)) throw new Error(`Solution skill prompt missed: ${required}`);
+  }
+  if (!solutionRequest.includes("stem_exam_teacher_v1") || !solutionRequest.includes("reviewCards")) {
+    throw new Error(`Solution skill request missed memory contract: ${solutionRequest}`);
   }
 
   console.log("core tests ok");

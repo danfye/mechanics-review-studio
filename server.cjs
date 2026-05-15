@@ -24,10 +24,19 @@ const {
   normalizeApiQuestionList,
   normalizeSolution,
 } = require("./lib/core/solution-generator.cjs");
+const {
+  AI_SOLUTION_SKILL_VERSION,
+  aiPptTeachingSkillPrompt,
+  aiSolutionSkillPrompt,
+  pptTeachingSummaryRequest,
+  solutionSkillRequest,
+} = require("./lib/core/ai-skills.cjs");
 const serverHttp = require("./lib/server/http.cjs");
 const { createRepository } = require("./lib/server/repository.cjs");
 const { createWorkspaceService } = require("./lib/server/workspace-service.cjs");
 const { createRuntimeRequire } = require("./lib/server/runtime-require.cjs");
+const { createApiTeachingMaterials } = require("./lib/server/api-teaching-materials.cjs");
+const { createApiKeyStore, normalizeApiKey } = require("./lib/server/api-key-store.cjs");
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -38,9 +47,13 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const runtimeRequire = createRuntimeRequire(ROOT);
 const repository = createRepository({ dataDir: DATA_DIR, uploadDir: UPLOAD_DIR, dbPath: DB_PATH });
-const workspaceService = createWorkspaceService({ buildDocumentKnowledgeModel });
+const apiKeyStore = createApiKeyStore();
+const workspaceService = createWorkspaceService({
+  buildDocumentKnowledgeModel,
+  hasApiKey: () => apiKeyStore.hasApiKey(),
+});
 const { json, text, readJson } = serverHttp;
-const { ensureDataDirs, readDb, writeDb, storedUploadPath, deleteStoredDocumentFile } = repository;
+const { ensureDataDirs, readDb: readRawDb, writeDb: writeRawDb, storedUploadPath, deleteStoredDocumentFile } = repository;
 const { publicState, refreshDocumentKnowledge } = workspaceService;
 
 const API_CACHE_TTL_MS = 1000 * 60 * 10;
@@ -493,7 +506,7 @@ function ensurePdfTextExtractionGlobals() {
     globalThis.navigator = {
       language: "zh-CN",
       platform: process.platform,
-      userAgent: "mechanics-review-studio",
+      userAgent: "stem-review-studio",
     };
   }
 }
@@ -688,9 +701,32 @@ function summaryScoredConceptsByChapter(courseModel, index = buildCourseModelInd
   return index.scoredConceptsByChapter;
 }
 
+function summarySortedScoredConcepts(courseModel, index = buildCourseModelIndex(courseModel)) {
+  if (!index.sortedScoredConcepts) {
+    index.sortedScoredConcepts = [...summaryScoredConcepts(courseModel, index)].sort(
+      (a, b) => b.summary_score - a.summary_score || String(a.name).localeCompare(String(b.name), "zh-Hans-CN"),
+    );
+  }
+  return index.sortedScoredConcepts;
+}
+
+function summaryMistakesByChapterSelection(index = {}) {
+  if (!index.mistakesByChapterSelection) {
+    index.mistakesByChapterSelection = new Map();
+    for (const [chapterId, mistakes] of index.mistakesByChapter.entries()) {
+      index.mistakesByChapterSelection.set(
+        chapterId,
+        [...mistakes].sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0)),
+      );
+    }
+  }
+  return index.mistakesByChapterSelection;
+}
+
 function buildPptKnowledgeSummary(courseModel, coreConcepts = [], index = buildCourseModelIndex(courseModel)) {
   const coreNames = new Set(coreConcepts.map((concept) => concept.name));
   const conceptsByChapter = summaryScoredConceptsByChapter(courseModel, index);
+  const mistakesBySelection = summaryMistakesByChapterSelection(index);
   return (courseModel.chapters || [])
     .map((chapter) => {
       const chapterConcepts = chapterItems(conceptsByChapter, chapter.chapter_id);
@@ -699,10 +735,7 @@ function buildPptKnowledgeSummary(courseModel, coreConcepts = [], index = buildC
         .slice(0, 4);
       const formulas = chapterItems(index.formulasByChapter, chapter.chapter_id).slice(0, 3);
       const problems = chapterItems(index.problemsByChapter, chapter.chapter_id).slice(0, 2);
-      const mistakes = chapterItems(index.mistakesByChapter, chapter.chapter_id)
-        .slice()
-        .sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0))
-        .slice(0, 2);
+      const mistakes = chapterItems(mistakesBySelection, chapter.chapter_id).slice(0, 2);
       if (!selectedConcepts.length && !formulas.length && !problems.length && !mistakes.length) return "";
       const title = summaryChapterTitle(chapter, {
         concepts: selectedConcepts.map((concept) => concept.name),
@@ -725,9 +758,8 @@ function buildPptKnowledgeSummary(courseModel, coreConcepts = [], index = buildC
 }
 
 function selectSummaryConcepts(courseModel, limit = 12, index = buildCourseModelIndex(courseModel)) {
-  return summaryScoredConcepts(courseModel, index)
+  return summarySortedScoredConcepts(courseModel, index)
     .filter((concept) => concept.summary_score >= 120 || concept.candidate_confidence === "high")
-    .sort((a, b) => b.summary_score - a.summary_score || String(a.name).localeCompare(String(b.name), "zh-Hans-CN"))
     .slice(0, limit);
 }
 
@@ -1303,6 +1335,7 @@ async function extractPptx(buffer) {
     .file(/^ppt\/slides\/slide\d+\.xml$/)
     .sort((a, b) => slideNumber(a.name) - slideNumber(b.name));
   const notesBySlide = await extractPptxNotesBySlide(zip);
+  const imagesBySlide = await extractPptxImagesBySlide(zip);
   const units = [];
 
   for (const file of slideFiles) {
@@ -1310,8 +1343,9 @@ async function extractPptx(buffer) {
     const number = slideNumber(file.name);
     const altText = extractPptxAltText(xml);
     const notesText = notesBySlide.get(number) || "";
+    const imageRefs = imagesBySlide.get(number) || [];
     const unitText = normalizeText(uniqueStrings([extractSlideXmlText(xml), altText, notesText]).join("\n"));
-    if (unitText) {
+    if (unitText || imageRefs.length) {
       units.push({
         label: `第 ${number} 页`,
         text: unitText,
@@ -1320,6 +1354,8 @@ async function extractPptx(buffer) {
         symbolCount: (unitText.match(/[σσετγθφωΩμνΔδψπρ∇Φ]/g) || []).length,
         hasNotes: Boolean(notesText),
         hasAltText: Boolean(altText),
+        imageRefs,
+        imageCount: imageRefs.length,
       });
     }
   }
@@ -1329,6 +1365,32 @@ async function extractPptx(buffer) {
     units,
     warning: units.length ? "" : "没有从 PPTX 中抽取到可读文本，可能主要是图片或扫描内容。",
   };
+}
+
+async function extractPptxImagesBySlide(zip) {
+  const result = new Map();
+  const relFiles = zip.file(/^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/);
+  await Promise.all(
+    relFiles.map(async (file) => {
+      const number = slideNumber(file.name.replace(".rels", ""));
+      const relXml = await file.async("text");
+      const imageRefs = [];
+      for (const match of relXml.matchAll(/<Relationship\b[^>]*Type="[^"]*\/image"[^>]*Target="([^"]+)"/gi)) {
+        const target = decodeXml(match[1] || "");
+        const mediaPath = normalizePptxRelTarget("ppt/slides", target);
+        const mediaFile = zip.file(mediaPath);
+        if (!mediaFile) continue;
+        imageRefs.push({ path: mediaPath, name: path.basename(mediaPath) });
+      }
+      if (number && imageRefs.length) result.set(number, imageRefs);
+    }),
+  );
+  return result;
+}
+
+function normalizePptxRelTarget(baseDir, target) {
+  const normalized = path.posix.normalize(path.posix.join(baseDir, target));
+  return normalized.replace(/^\/+/, "");
 }
 
 function slideNumber(name) {
@@ -1514,6 +1576,17 @@ function sanitizeSourceRefs(sourceRefs = [], validDocumentIds = null) {
     })
     .filter(Boolean)
     .slice(0, 8);
+}
+
+function normalizeCourseSourceRefs(db, courseId, input = {}, existingDocumentIds = []) {
+  const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === courseId).map((doc) => doc.id));
+  const sourceRefs = sanitizeSourceRefs(input.sourceRefs || input.source_refs, courseDocIds);
+  const sourceDocumentIds = uniqueStrings([
+    ...(Array.isArray(input.sourceDocumentIds) ? input.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+    ...(Array.isArray(existingDocumentIds) ? existingDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
+    ...sourceRefs.map((ref) => ref.document_id),
+  ]);
+  return { courseDocIds, sourceRefs, sourceDocumentIds };
 }
 
 function uniqueSourceRefs(sourceRefs = []) {
@@ -2147,6 +2220,18 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
   const map = buildKnowledgeMap(course, docs);
   const buckets = new Map();
   const sourceText = docs.map((doc) => doc.text).join("\n\n");
+  const definitionById = new Map(TOPIC_DEFINITIONS.map((definition) => [definition.id, definition]));
+  const definitionSourceDocIds = new Map();
+  const getDefinitionSourceDocumentIds = (definition) => {
+    if (!definition) return docs.map((doc) => doc.id);
+    if (!definitionSourceDocIds.has(definition.id)) {
+      definitionSourceDocIds.set(
+        definition.id,
+        docs.filter((doc) => definition.pattern.test(doc.text || "")).map((doc) => doc.id),
+      );
+    }
+    return definitionSourceDocIds.get(definition.id);
+  };
 
   for (const bucket of buildMaterialReviewBuckets(docs)) {
     buckets.set(bucket.id, bucket);
@@ -2154,7 +2239,7 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
 
   const ensureBucket = (topic) => {
     if (!buckets.has(topic.id)) {
-      const definition = TOPIC_DEFINITIONS.find((item) => item.id === topic.id);
+      const definition = definitionById.get(topic.id);
       buckets.set(topic.id, {
         id: topic.id,
         title: topic.title,
@@ -2178,10 +2263,8 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
 
   if (!buckets.size) {
     for (const topic of map.topics || []) {
-      const definition = TOPIC_DEFINITIONS.find((item) => item.id === topic.id);
-      const sourceDocumentIds = definition
-        ? docs.filter((doc) => definition.pattern.test(doc.text || "")).map((doc) => doc.id)
-        : docs.map((doc) => doc.id);
+      const definition = definitionById.get(topic.id);
+      const sourceDocumentIds = getDefinitionSourceDocumentIds(definition);
       ensureBucket({ ...topic, sourceDocumentIds, sourceText });
     }
 
@@ -2197,7 +2280,7 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
         formulas: topicFormulaLines(sourceText, definition, 4),
         checks: definition.checks,
         evidence: getUnitMatches(docs, definition.pattern, 2),
-        sourceDocumentIds: docs.filter((doc) => definition.pattern.test(doc.text || "")).map((doc) => doc.id),
+        sourceDocumentIds: getDefinitionSourceDocumentIds(definition),
         sourceText,
       });
       bucket.score = Math.max(bucket.score, topicScore(sourceText, definition));
@@ -2214,7 +2297,7 @@ function localReviewPlan(course, docs, mistakes = [], sessions = [], options = {
     const matchedIds = matchTopicIdsForMistake(mistake, docs);
     const targets = matchedIds.length ? matchedIds : ["mistake-review"];
     for (const topicId of targets) {
-      const definition = TOPIC_DEFINITIONS.find((item) => item.id === topicId);
+      const definition = definitionById.get(topicId);
       const bucket = ensureBucket(
         definition
           ? {
@@ -3045,6 +3128,74 @@ function selectDocs(db, body) {
   return wanted.size ? byCourse.filter((doc) => wanted.has(doc.id)) : byCourse;
 }
 
+function stripApiKeyFromDb(db) {
+  return {
+    ...db,
+    settings: {
+      ...(db.settings || {}),
+      apiKey: "",
+    },
+  };
+}
+
+async function readDb() {
+  const db = await readRawDb();
+  const legacyApiKey = normalizeApiKey(db.settings?.apiKey);
+  const storedApiKey = apiKeyStore.getApiKey();
+  if (legacyApiKey) {
+    db.settings.apiKey = storedApiKey || legacyApiKey;
+    if (!storedApiKey) {
+      await apiKeyStore.saveApiKey(legacyApiKey);
+    }
+    await writeRawDb(stripApiKeyFromDb(db));
+    return db;
+  }
+  db.settings.apiKey = storedApiKey;
+  return db;
+}
+
+async function writeDb(db) {
+  const apiKey = normalizeApiKey(db.settings?.apiKey);
+  if (apiKey) {
+    await apiKeyStore.saveApiKey(apiKey);
+  } else {
+    await apiKeyStore.clearApiKey();
+  }
+  await writeRawDb(stripApiKeyFromDb(db));
+}
+
+function apiReady(settings = {}) {
+  return settings.provider === "api" && Boolean(settings.apiKey && settings.apiBaseUrl && settings.model);
+}
+
+const apiTeachingMaterials = createApiTeachingMaterials({
+  fsp,
+  runtimeRequire,
+  storedUploadPath,
+  makeUnitSourceRef,
+  cleanApiSourceRefs,
+  clampText,
+  buildApiStudyContext,
+  truncateForModel,
+});
+const buildApiTeachingMaterials = apiTeachingMaterials.buildTeachingMaterials;
+const buildTeachingUserContent = apiTeachingMaterials.teachingUserContent;
+const apiCanUseVisualDoc = apiTeachingMaterials.canUseVisualDoc;
+
+function docHasText(doc = {}) {
+  return Boolean(String(doc.text || "").trim());
+}
+
+function docHasApiTeachingInput(doc = {}) {
+  return docHasText(doc) || apiCanUseVisualDoc(doc) || (doc.units || []).some((unit) => unit.imageRefs?.length);
+}
+
+function selectTeachingDocs(db, body) {
+  const docs = selectDocs(db, body);
+  if (apiReady(db.settings)) return docs.filter(docHasApiTeachingInput);
+  return docs.filter(docHasText);
+}
+
 function truncateForModel(textValue, maxChars = 70000) {
   if (textValue.length <= maxChars) return textValue;
   return `${textValue.slice(0, Math.floor(maxChars * 0.7))}\n\n[中间内容已截断]\n\n${textValue.slice(-Math.floor(maxChars * 0.3))}`;
@@ -3221,38 +3372,22 @@ async function callChatApi(settings, messages, responseFormat, options = {}) {
 }
 
 async function apiSummary(db, courseModel, docs, mindMap) {
-  const compactContext = truncateForModel(
-    buildApiStudyContext(courseModel, docs, { conceptLimit: 16, formulaLimit: 14, problemLimit: 12, mistakeLimit: 10 }),
-    22000,
-  );
+  const materials = await buildApiTeachingMaterials(courseModel, docs, { maxChars: 36000, imageLimit: 4 });
   const localOutline = truncateForModel(localStructuredSummary(courseModel, mindMap), 9000);
   return callChatApi(db.settings, [
     {
       role: "system",
-      content:
-        "你是 STEM 期末复习助教。请用中文输出严谨、可考试复习的 Markdown，强调定义、公式适用条件、典型题型、易错点。公式统一使用 `$...$` 包裹的类 LaTeX 形式。不要堆砌原文，优先输出高价值复习决策。",
+      content: aiPptTeachingSkillPrompt(),
     },
     {
       role: "user",
-      content: `科目：${courseModel.course?.name || "未命名科目"}
-本地图谱规模：${mindMap?.stats?.nodes || 0} 个节点 / ${mindMap?.stats?.edges || 0} 条关系。
-
-请生成一份能帮助我理解 PPT 的复习总结，固定包含：
-1. 核心考点清单：按考试价值排序，每点说明为什么重要、来源页/页码线索。
-2. 重难点拆解：说明难在哪里、先理解什么、容易和什么混淆。
-3. 公式与适用条件：不要只列公式，必须写变量含义、适用前提、常见误用。
-4. 典型题型入口：把 PPT 中的例题/作业抽象成题型和第一步解题动作。
-5. 易错/扣分点：转化成考场检查清单。
-6. 考前自测：给 6-8 个短问题，覆盖概念、公式条件、计算入口和错因诊断。
-7. 资料不足提醒：如果资料显示公式/例题不足，明确提示可能是图片型 PPT 或解析不足。
-
-结构化证据：
-${compactContext}
-
-本地提纲草稿（可优化但不要丢失证据）：
-${localOutline}`,
+      content: buildTeachingUserContent(
+        pptTeachingSummaryRequest(courseModel.course?.name || "未命名科目", mindMap?.stats || {}),
+        materials,
+        `本地提纲草稿（只作参考，可重组和改写，但不要丢失可验证证据）：\n${localOutline}`,
+      ),
     },
-  ]);
+  ], null, { timeoutMs: 90000 });
 }
 
 async function apiQuiz(db, courseModel, docs, body, localResult) {
@@ -3351,19 +3486,33 @@ async function apiAsk(db, course, docs, question) {
   const context = retrieveContext(docs, question, 10)
     .map((item) => `【${item.doc.originalName} / ${item.label}】\n${item.text}`)
     .join("\n\n");
-  if (db.settings.provider === "api" && db.settings.apiKey) {
+  if (apiReady(db.settings)) {
     const courseModel = courseKnowledgeModel(course, docs);
-    const studyContext = buildApiStudyContext(courseModel, docs, { conceptLimit: 8, formulaLimit: 8, problemLimit: 6, mistakeLimit: 4 });
+    const materials = await buildApiTeachingMaterials(courseModel, docs, {
+      maxChars: 22000,
+      contextChars: 10000,
+      unitChars: 600,
+      unitsPerDoc: 5,
+      imageLimit: 3,
+      conceptLimit: 8,
+      formulaLimit: 8,
+      problemLimit: 6,
+      mistakeLimit: 4,
+    });
     return callChatApi(db.settings, [
       {
         role: "system",
-        content: "你是 STEM 期末复习助教。只能基于给定资料回答；资料不足时要明确说明。回答要短、直接、面向考试复习。",
+        content: "你是 STEM 期末复习助教。只能基于给定资料回答；资料不足时要明确说明。回答要短、直接、面向考试复习。如果有图片资料，直接阅读图片中的公式、图示、题干和标注。",
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n问题：${question}\n\n结构化复习上下文：\n${truncateForModel(studyContext, 9000)}\n\n检索到的原文片段：\n${truncateForModel(context, 9000)}`,
+        content: buildTeachingUserContent(
+          `科目：${course?.name || "未命名科目"}\n问题：${question}`,
+          materials,
+          context ? `检索到的原文片段：\n${truncateForModel(context, 6000)}` : "本地文本检索没有命中，请直接根据资料图片或结构化证据回答。",
+        ),
       },
-    ]);
+    ], null, { timeoutMs: 90000 });
   }
   return localAnswer(docs, question);
 }
@@ -3374,8 +3523,9 @@ function retrieveContext(docs, question, limit = 8) {
   for (const doc of docs) {
     const units = doc.units?.length ? doc.units : [{ label: "全文", text: doc.text }];
     for (const unit of units) {
-      const score = [...queryTokens].reduce((sum, token) => sum + (unit.text.includes(token) ? 1 : 0), 0);
-      pushTopByScore(ranked, { doc, label: unit.label, text: unit.text.slice(0, 1600), score }, limit, (item) => item.score);
+      const unitText = String(unit.text || "");
+      const score = [...queryTokens].reduce((sum, token) => sum + (unitText.includes(token) ? 1 : 0), 0);
+      pushTopByScore(ranked, { doc, label: unit.label, text: unitText.slice(0, 1600), score }, limit, (item) => item.score);
     }
   }
   return ranked;
@@ -3424,25 +3574,39 @@ function buildApiSolutionContext(courseModel, docs, question, localSolution) {
 async function apiSolveQuestion(db, course, docs, body) {
   const courseModel = courseKnowledgeModel(course, docs);
   const localSolution = localSolveQuestion(course, docs, body, courseModel);
-  if (!(db.settings.provider === "api" && db.settings.apiKey)) {
+  if (!apiReady(db.settings)) {
     return { courseModel, solution: localSolution };
   }
   const question = String(body.question || "").trim();
+  const materials = await buildApiTeachingMaterials(courseModel, docs, {
+    maxChars: 26000,
+    contextChars: 14000,
+    unitChars: 700,
+    unitsPerDoc: 6,
+    imageLimit: 3,
+    conceptLimit: 10,
+    formulaLimit: 8,
+    problemLimit: 6,
+    mistakeLimit: 6,
+  });
   const content = await callChatApi(
     db.settings,
     [
       {
         role: "system",
-        content:
-          '你是严谨的 STEM 期末解题助教。只输出 JSON 对象，不要输出 Markdown。必须基于题目和资料证据，给出可复习的完整解法。JSON 字段：title, subject, question, knowns, target, relatedConcepts, formulaHints, method, steps, answer, commonMistakes, reviewCards, similarDrillPrompt。steps 为数组，每项含 title/detail/formula；reviewCards 为数组，每项含 type/title/body。公式用类 LaTeX 字符串。',
+        content: aiSolutionSkillPrompt(),
       },
       {
         role: "user",
-        content: `科目：${course?.name || "未命名科目"}\n\n请生成高质量解题结果。要求：1. 先解释题型入口；2. 步骤完整但不堆砌；3. 明确最终答案或在条件不足时说明缺少什么；4. 生成可固化到期末复习记忆的 reviewCards；5. 不编造资料中不存在的来源。\n\n${buildApiSolutionContext(courseModel, docs, question, localSolution)}`,
+        content: buildTeachingUserContent(
+          solutionSkillRequest(course?.name || "未命名科目", question),
+          materials,
+          `本地解题草稿（只作兜底和提示，API 应输出更像老师讲解的版本）：\n${buildApiSolutionContext(courseModel, docs, question, localSolution)}`,
+        ),
       },
     ],
     { type: "json_object" },
-    { cache: false, timeoutMs: 60000 },
+    { cache: false, timeoutMs: 90000, temperature: 0.15 },
   );
   const parsed = parseJsonFromModel(content);
   return {
@@ -3450,6 +3614,7 @@ async function apiSolveQuestion(db, course, docs, body) {
     solution: normalizeSolution(parsed, {
       ...localSolution,
       provider: "api",
+      skillVersion: AI_SOLUTION_SKILL_VERSION,
       id: id("solution"),
     }),
   };
@@ -3712,19 +3877,19 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname === "/api/generate/summary") {
     const body = await readJson(req);
     const course = db.courses.find((item) => item.id === body.courseId);
-    const docs = selectDocs(db, body).filter((doc) => doc.text);
+    const docs = selectTeachingDocs(db, body);
     if (!course) return json(res, 404, { error: "没有找到该科目。" });
-    if (!docs.length) return json(res, 400, { error: "该科目还没有可用于总结的文本资料。" });
+    if (!docs.length) return json(res, 400, { error: apiReady(db.settings) ? "该科目还没有可用于 AI 教学的资料。" : "该科目还没有可用于总结的文本资料。" });
     try {
       const courseModel = courseKnowledgeModel(course, docs);
       const mindMap = generateMindMap(courseModel, body.mindMapFilters || {});
       const knowledgeMap = localKnowledgeMap(course, docs);
       const markdown =
-        db.settings.provider === "api" && db.settings.apiKey
+        apiReady(db.settings)
           ? await apiSummary(db, courseModel, docs, mindMap)
           : localStructuredSummary(courseModel, mindMap);
       return json(res, 200, {
-        provider: db.settings.provider === "api" && db.settings.apiKey ? "api" : "local",
+        provider: apiReady(db.settings) ? "api" : "local",
         courseModel,
         mindMap,
         knowledgeMap,
@@ -3765,15 +3930,15 @@ async function handleApi(req, res, pathname) {
       const courseModel = courseKnowledgeModel(course, docs);
       const localResult = generateQuestionSet(courseModel, body);
       const questions =
-        db.settings.provider === "api" && db.settings.apiKey
+        apiReady(db.settings)
           ? await apiQuiz(db, courseModel, docs, body, localResult)
           : localResult.questions;
       const evaluation =
-        db.settings.provider === "api" && db.settings.apiKey
+        apiReady(db.settings)
           ? evaluateQuestionSet(questions, courseModel)
           : localResult.evaluation;
       return json(res, 200, {
-        provider: db.settings.provider === "api" && db.settings.apiKey ? "api" : "local",
+        provider: apiReady(db.settings) ? "api" : "local",
         courseModel,
         questions,
         evaluation,
@@ -3805,11 +3970,11 @@ async function handleApi(req, res, pathname) {
     const count = Math.max(2, Math.min(Number(body.count || 4), 10));
     try {
       const questions =
-        db.settings.provider === "api" && db.settings.apiKey
+        apiReady(db.settings)
           ? await apiSimilarQuestions(db, course, mistake, docs, count)
           : localSimilarQuestions(mistake, docs, count);
       return json(res, 200, {
-        provider: db.settings.provider === "api" && db.settings.apiKey ? "api" : "local",
+        provider: apiReady(db.settings) ? "api" : "local",
         questions,
       });
     } catch (error) {
@@ -3867,15 +4032,15 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname === "/api/solve") {
     const body = await readJson(req);
     const course = db.courses.find((item) => item.id === body.courseId);
-    const docs = selectDocs(db, body).filter((doc) => doc.text);
+    const docs = selectTeachingDocs(db, body);
     const question = String(body.question || "").trim();
     if (!course) return json(res, 404, { error: "没有找到该科目。" });
     if (!question) return json(res, 400, { error: "题目不能为空。" });
-    if (!docs.length) return json(res, 400, { error: "该科目还没有可用于辅助解题的文本资料。" });
+    if (!docs.length) return json(res, 400, { error: apiReady(db.settings) ? "该科目还没有可用于 AI 解题的资料。" : "该科目还没有可用于辅助解题的文本资料。" });
     try {
       const { courseModel, solution } = await apiSolveQuestion(db, course, docs, body);
       return json(res, 200, {
-        provider: db.settings.provider === "api" && db.settings.apiKey ? solution.provider || "api" : "local",
+        provider: apiReady(db.settings) ? solution.provider || "api" : "local",
         courseModel,
         solution,
       });
@@ -3900,18 +4065,14 @@ async function handleApi(req, res, pathname) {
       provider: body.provider || "local",
     });
     if (!solution.question) return json(res, 400, { error: "题目不能为空。" });
-    const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === course.id).map((doc) => doc.id));
-    const sourceRefs = sanitizeSourceRefs(solution.sourceRefs || solution.source_refs, courseDocIds);
+    const { sourceRefs, sourceDocumentIds } = normalizeCourseSourceRefs(db, course.id, solution);
     const solvedQuestion = {
       ...solution,
       id: id("solved"),
       courseId: course.id,
       subject: course.name,
       sourceRefs,
-      sourceDocumentIds: uniqueStrings([
-        ...(Array.isArray(solution.sourceDocumentIds) ? solution.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
-        ...sourceRefs.map((ref) => ref.document_id),
-      ]),
+      sourceDocumentIds,
       provider: solution.provider || body.provider || "local",
       memoryPinned: body.memoryPinned !== false,
       createdAt: now(),
@@ -3961,10 +4122,10 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname === "/api/ask") {
     const body = await readJson(req);
     const course = db.courses.find((item) => item.id === body.courseId);
-    const docs = selectDocs(db, body).filter((doc) => doc.text);
+    const docs = selectTeachingDocs(db, body);
     if (!course) return json(res, 404, { error: "没有找到该科目。" });
     if (!String(body.question || "").trim()) return json(res, 400, { error: "问题不能为空。" });
-    if (!docs.length) return json(res, 400, { error: "该科目还没有可用于问答的文本资料。" });
+    if (!docs.length) return json(res, 400, { error: apiReady(db.settings) ? "该科目还没有可用于 AI 问答的资料。" : "该科目还没有可用于问答的文本资料。" });
     try {
       const answer = await apiAsk(db, course, docs, body.question.trim());
       return json(res, 200, { answer });
@@ -3975,12 +4136,7 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "POST" && pathname === "/api/mistakes") {
     const body = await readJson(req);
-    const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === body.courseId).map((doc) => doc.id));
-    const sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
-    const sourceDocumentIds = uniqueStrings([
-      ...(Array.isArray(body.sourceDocumentIds) ? body.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
-      ...sourceRefs.map((ref) => ref.document_id),
-    ]);
+    const { sourceRefs, sourceDocumentIds } = normalizeCourseSourceRefs(db, body.courseId, body);
     const mistake = {
       id: id("mistake"),
       courseId: body.courseId,
@@ -4005,13 +4161,8 @@ async function handleApi(req, res, pathname) {
     if (!course) return json(res, 404, { error: "没有找到该科目。" });
     const title = String(body.topicTitle || body.title || "").trim();
     if (!title) return json(res, 400, { error: "复习主题不能为空。" });
-    const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === course.id).map((doc) => doc.id));
     const courseMistakeIds = new Set(db.mistakes.filter((mistake) => mistake.courseId === course.id).map((mistake) => mistake.id));
-    const sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
-    const sourceDocumentIds = uniqueStrings([
-      ...(Array.isArray(body.sourceDocumentIds) ? body.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
-      ...sourceRefs.map((ref) => ref.document_id),
-    ]);
+    const { sourceRefs, sourceDocumentIds } = normalizeCourseSourceRefs(db, course.id, body);
     const session = {
       id: id("session"),
       courseId: course.id,
@@ -4054,12 +4205,9 @@ async function handleApi(req, res, pathname) {
     if (typeof body.mastered === "boolean") mistake.mastered = body.mastered;
     if (typeof body.userAnswer === "string") mistake.userAnswer = body.userAnswer;
     if (Array.isArray(body.sourceRefs) || Array.isArray(body.source_refs)) {
-      const courseDocIds = new Set(db.documents.filter((doc) => doc.courseId === mistake.courseId).map((doc) => doc.id));
-      mistake.sourceRefs = sanitizeSourceRefs(body.sourceRefs || body.source_refs, courseDocIds);
-      mistake.sourceDocumentIds = uniqueStrings([
-        ...(Array.isArray(mistake.sourceDocumentIds) ? mistake.sourceDocumentIds.filter((docId) => courseDocIds.has(docId)) : []),
-        ...mistake.sourceRefs.map((ref) => ref.document_id),
-      ]);
+      const normalized = normalizeCourseSourceRefs(db, mistake.courseId, body, mistake.sourceDocumentIds);
+      mistake.sourceRefs = normalized.sourceRefs;
+      mistake.sourceDocumentIds = normalized.sourceDocumentIds;
     }
     mistake.updatedAt = now();
     await writeDb(db);
@@ -4162,6 +4310,7 @@ function streamFile(res, filePath, explicitType) {
 
 async function main() {
   await ensureDataDirs();
+  await readDb();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -4184,7 +4333,7 @@ async function main() {
   });
 
   server.listen(PORT, HOST, () => {
-    console.log(`Mechanics Review Studio is running at http://${HOST}:${PORT}`);
+    console.log(`STEM Review Studio is running at http://${HOST}:${PORT}`);
   });
 }
 
@@ -4220,6 +4369,10 @@ module.exports = {
   evaluateQuestionSet,
   generateMindMap,
   StudyPlanGenerator,
+  aiPptTeachingSkillPrompt,
+  aiSolutionSkillPrompt,
+  pptTeachingSummaryRequest,
+  solutionSkillRequest,
   readDb,
   writeDb,
   publicState,
