@@ -116,6 +116,63 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
+  function installMotionFeedback() {
+    if (document.body.dataset.motionFeedbackReady === "true") return;
+    document.body.dataset.motionFeedbackReady = "true";
+
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        const target = event.target.closest(
+          [
+            "button",
+            "a.secondary-link",
+            ".course-button",
+            ".dashboard-card",
+            ".dashboard-status-list button",
+            ".dashboard-doc-card",
+            ".item-card",
+            ".knowledge-card",
+            ".plan-card",
+            ".cram-mini-card",
+            ".cram-question",
+            ".graph-node",
+            ".mind-node",
+            ".outline-button",
+            ".page-button",
+            ".upload-target",
+            ".source-ref-button",
+          ].join(","),
+        );
+        if (!target || target.disabled || event.button !== 0) return;
+        target.classList.add("is-pressed");
+        window.clearTimeout(target.__pressTimer);
+        target.__pressTimer = window.setTimeout(() => target.classList.remove("is-pressed"), 170);
+
+        if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+        const rect = target.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const ripple = document.createElement("span");
+        ripple.className = "ui-ripple";
+        const size = Math.max(rect.width, rect.height) * 1.6;
+        ripple.style.width = `${size}px`;
+        ripple.style.height = `${size}px`;
+        ripple.style.left = `${event.clientX - rect.left - size / 2}px`;
+        ripple.style.top = `${event.clientY - rect.top - size / 2}px`;
+        target.appendChild(ripple);
+        ripple.addEventListener("animationend", () => ripple.remove(), { once: true });
+      },
+      { passive: true },
+    );
+
+    document.addEventListener("pointerup", () => {
+      $$(".is-pressed").forEach((element) => element.classList.remove("is-pressed"));
+    });
+    document.addEventListener("pointercancel", () => {
+      $$(".is-pressed").forEach((element) => element.classList.remove("is-pressed"));
+    });
+  }
+
   function toast(message) {
     const el = $("#toast");
     el.textContent = message;
@@ -262,7 +319,7 @@
     const stats = courseView()?.stats || {};
     const selectedCount = selectedDocumentIds().length;
     const recentDocs = (docViews.length ? docViews : docs)
-      .slice(0, 4)
+      .slice(0, 2)
       .map((doc) => {
         const sourceDoc = state.index.documentsById.get(doc.id) || doc;
         const quality = doc.parseQuality || sourceDoc.parseQuality || sourceDoc.knowledgeModel?.parse_quality;
@@ -360,21 +417,21 @@
     const cramStatus = state.currentCramPack?.courseId === state.currentCourseId ? state.currentCramPack.summary : null;
     target.innerHTML = `<section class="dashboard-hero">
       <div class="dashboard-hero-copy">
-        <span class="map-label">视觉总览</span>
+        <span class="map-label">当前科目</span>
         <h3>${escapeHtml(course?.name || "先新建一个科目")}</h3>
-        <p>${escapeHtml(course ? `已选择 ${selectedCount} 份资料作为生成范围。` : "创建科目并导入资料后，这里会显示复习总览。")}</p>
-        <div class="dashboard-hero-actions">
-          <button class="primary-button" type="button" data-dashboard-tab="documents"><i data-lucide="upload-cloud"></i>导入资料</button>
-          <button class="secondary-button" type="button" data-dashboard-tab="summary"><i data-lucide="sparkles"></i>生成知识地图</button>
-        </div>
+        <p>${escapeHtml(course ? `${selectedCount} 份资料已纳入当前生成范围，先处理资料，再进入知识地图、计划和训练。` : "创建科目并导入资料后，这里会显示复习入口和当前进度。")}</p>
       </div>
-      <div class="dashboard-stat-grid">${quickStats}</div>
+      <div class="dashboard-hero-actions" aria-label="主要操作">
+        <button class="primary-button" type="button" data-dashboard-tab="documents"><i data-lucide="upload-cloud"></i>导入资料</button>
+        <button class="secondary-button" type="button" data-dashboard-tab="summary"><i data-lucide="sparkles"></i>生成知识地图</button>
+      </div>
     </section>
+    <section class="dashboard-stat-grid dashboard-overview-strip" aria-label="当前科目数据">${quickStats}</section>
     <section class="dashboard-layout">
       <div class="dashboard-main">
         <div class="section-heading">
-          <h3>复习模块</h3>
-          <span class="muted">从总览进入具体工作区</span>
+          <h3>核心工作流</h3>
+          <span class="muted">按复习顺序进入具体工作区</span>
         </div>
         <div class="dashboard-card-grid">${moduleCards}</div>
       </div>
@@ -3665,6 +3722,7 @@
 
   async function boot() {
     initParticleField();
+    installMotionFeedback();
     bindEvents();
     const data = await api("/api/state");
     setStateData(data);
