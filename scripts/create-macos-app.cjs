@@ -5,7 +5,7 @@ const { spawnSync } = require("node:child_process");
 
 const DEFAULT_ROOT = path.join(__dirname, "..");
 const DEFAULT_DIST_DIR = path.join(DEFAULT_ROOT, "dist");
-const DEFAULT_APP_NAME = "理工科复习台";
+const DEFAULT_APP_NAME = "API 课程助教";
 
 function plist(appName, bundleIdentifier) {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -211,7 +211,7 @@ async function createMacApp(options = {}) {
   const root = path.resolve(options.root || DEFAULT_ROOT);
   const distDir = path.resolve(options.distDir || DEFAULT_DIST_DIR);
   const appName = options.appName || DEFAULT_APP_NAME;
-  const bundleIdentifier = options.bundleIdentifier || "local.stem-review.launcher";
+  const bundleIdentifier = options.bundleIdentifier || "local.api-course-tutor.launcher";
   const portable = Boolean(options.portable);
   const appDir = path.join(distDir, `${appName}.app`);
   const contentsDir = path.join(appDir, "Contents");

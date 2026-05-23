@@ -4,6 +4,8 @@ dist/
 # Local app data and uploaded course materials
 data/db.json
 data/uploads/
+data/logs/
+data-backups/
 
 # Local environment and Codex runtime files
 .env

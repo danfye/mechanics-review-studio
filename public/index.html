@@ -3,316 +3,74 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>理工科复习台</title>
+    <title>API 课程助教</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="ambient-layer" aria-hidden="true">
-      <div id="particle-field" class="particle-field"></div>
-    </div>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark"><i data-lucide="blocks"></i></div>
+          <div class="brand-mark"><i data-lucide="graduation-cap"></i></div>
           <div>
-            <h1>理工科复习台</h1>
-            <p>本地资料库</p>
+            <h1>API 课程助教</h1>
+            <p>课件教学 · 作业解题 · 期末复习</p>
           </div>
         </div>
 
         <form id="course-form" class="course-form">
-          <label for="course-name">科目</label>
+          <label for="course-name">当前科目</label>
           <div class="inline-input">
-            <input id="course-name" name="name" placeholder="如 材料力学" autocomplete="off" />
-            <button type="submit" class="icon-button" title="新建科目" aria-label="新建科目">
-              <i data-lucide="plus"></i>
-            </button>
+            <input id="course-name" placeholder="如 材料力学" autocomplete="off" />
+            <button type="submit" class="icon-button" title="新建科目" aria-label="新建科目"><i data-lucide="plus"></i></button>
           </div>
         </form>
-
         <nav id="course-list" class="course-list" aria-label="科目列表"></nav>
 
-        <div class="sidebar-stats">
-          <div>
-            <span id="stat-docs">0</span>
-            <small>资料</small>
+        <section class="side-section">
+          <div class="section-heading">
+            <h2>资料库</h2>
+            <span id="material-count">0</span>
           </div>
-          <div>
-            <span id="stat-packs">0</span>
-            <small>知识包</small>
-          </div>
-          <div>
-            <span id="stat-drills">0</span>
-            <small>训练</small>
-          </div>
-          <div>
-            <span id="stat-mistakes">0</span>
-            <small>错题</small>
-          </div>
-          <div>
-            <span id="stat-sessions">0</span>
-            <small>复盘</small>
-          </div>
-        </div>
+          <form id="material-form" class="material-form">
+            <input id="material-input" type="file" multiple accept=".pptx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md" />
+            <label for="material-input" class="upload-target">
+              <i data-lucide="paperclip"></i>
+              <span>选择课件、PDF、图片或文本</span>
+            </label>
+            <button class="primary-button" type="submit"><i data-lucide="upload-cloud"></i>导入资料</button>
+          </form>
+          <div id="material-list" class="material-list empty-state">还没有资料。</div>
+        </section>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div class="topbar-copy">
-            <h2 id="current-course-title">先新建一个科目</h2>
+          <div>
+            <p id="api-state-label" class="eyebrow">检查 API 配置</p>
+            <h2 id="course-title">我的课程</h2>
           </div>
-          <div class="topbar-actions">
-            <div class="status-pill" id="provider-pill">
-              <i data-lucide="cpu"></i>
-              <span>本地模式</span>
-            </div>
-          </div>
+          <button id="settings-toggle" class="secondary-button" type="button"><i data-lucide="settings"></i>设置</button>
         </header>
 
-        <div class="tabs" role="tablist" aria-label="功能">
-          <button id="tab-dashboard" class="tab-button active" data-tab="dashboard" role="tab" aria-controls="view-dashboard" aria-selected="true" tabindex="0"><i data-lucide="layout-dashboard"></i>总览</button>
-          <button id="tab-documents" class="tab-button" data-tab="documents" role="tab" aria-controls="view-documents" aria-selected="false" tabindex="-1"><i data-lucide="folder-open"></i>资料</button>
-          <button id="tab-summary" class="tab-button" data-tab="summary" role="tab" aria-controls="view-summary" aria-selected="false" tabindex="-1"><i data-lucide="list-checks"></i>知识点</button>
-          <button id="tab-planner" class="tab-button" data-tab="planner" role="tab" aria-controls="view-planner" aria-selected="false" tabindex="-1"><i data-lucide="calendar-check"></i>复习计划</button>
-          <button id="tab-cram" class="tab-button" data-tab="cram" role="tab" aria-controls="view-cram" aria-selected="false" tabindex="-1"><i data-lucide="flame"></i>冲刺包</button>
-          <button id="tab-quiz" class="tab-button" data-tab="quiz" role="tab" aria-controls="view-quiz" aria-selected="false" tabindex="-1"><i data-lucide="pencil-ruler"></i>刷题</button>
-          <button id="tab-solver" class="tab-button" data-tab="solver" role="tab" aria-controls="view-solver" aria-selected="false" tabindex="-1"><i data-lucide="calculator"></i>解题</button>
-          <button id="tab-ask" class="tab-button" data-tab="ask" role="tab" aria-controls="view-ask" aria-selected="false" tabindex="-1"><i data-lucide="message-square-text"></i>问答</button>
-          <button id="tab-mistakes" class="tab-button" data-tab="mistakes" role="tab" aria-controls="view-mistakes" aria-selected="false" tabindex="-1"><i data-lucide="bookmark-x"></i>错题</button>
-          <button id="tab-settings" class="tab-button" data-tab="settings" role="tab" aria-controls="view-settings" aria-selected="false" tabindex="-1"><i data-lucide="settings"></i>设置</button>
-        </div>
-
-        <section id="view-dashboard" class="view active-view" role="tabpanel" aria-labelledby="tab-dashboard">
-          <div id="dashboard-root" class="dashboard-root"></div>
-        </section>
-
-        <section id="view-documents" class="view" role="tabpanel" aria-labelledby="tab-documents" hidden>
-          <section class="upload-band workspace-upload">
-            <form id="upload-form" class="upload-form">
-              <input id="file-input" type="file" name="files" multiple accept=".pptx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md" />
-              <label for="file-input" class="upload-target">
-                <i data-lucide="upload-cloud"></i>
-                <span>上传资料</span>
-              </label>
-              <button type="submit" class="primary-button">
-                <i data-lucide="file-up"></i>
-                导入
-              </button>
-            </form>
-            <details class="text-import-panel">
-              <summary><i data-lucide="text-cursor-input"></i>粘贴例题</summary>
-              <form id="text-import-form" class="text-import-form">
-                <label>
-                  资料名称
-                  <input id="text-import-name" placeholder="如 轴向拉压例题.txt" autocomplete="off" />
-                </label>
-                <label>
-                  例题文本
-                  <textarea id="text-import-content" placeholder="例题 1：已知...&#10;求：...&#10;解：..."></textarea>
-                </label>
-                <button type="submit" class="primary-button"><i data-lucide="plus"></i>导入文字</button>
-              </form>
-            </details>
-            <p id="upload-note" class="muted status-note" aria-live="polite"></p>
-          </section>
-          <div class="split-view">
-            <div>
-              <div class="section-heading">
-                <h3>资料列表</h3>
-                <button id="select-all-docs" class="secondary-button"><i data-lucide="check-square"></i>全选</button>
-              </div>
-              <div id="document-list" class="item-list"></div>
-            </div>
-            <article class="detail-panel">
-              <div class="section-heading">
-                <h3>定位</h3>
-                <span id="doc-preview-meta" class="muted">选择一份资料</span>
-              </div>
-              <div id="doc-outline" class="doc-outline empty-state">暂无分页</div>
-              <div id="doc-file-frame-wrap" class="doc-file-frame-wrap" hidden>
-                <div class="doc-file-toolbar">
-                  <span id="doc-file-page" class="muted"></span>
-                  <a id="doc-file-link" class="secondary-link" target="_blank" rel="noreferrer">打开原文件</a>
-                </div>
-                <iframe id="doc-file-frame" class="doc-file-frame" title="原文件预览"></iframe>
-              </div>
-              <div id="doc-preview-summary" class="doc-preview-summary empty-state">选择资料后显示片段摘要。</div>
-              <details id="doc-preview-panel" class="doc-preview-panel">
-                <summary>原文片段</summary>
-                <pre id="doc-preview" class="text-preview"></pre>
-              </details>
-            </article>
+        <section id="setup-alert" class="setup-alert" hidden>
+          <i data-lucide="plug-zap"></i>
+          <div>
+            <strong>先配置 API 才能使用助教</strong>
+            <p>这个版本不再提供本地假答案。请填写 Base URL、API Key 并选择模型后测试连接。</p>
           </div>
         </section>
 
-        <section id="view-summary" class="view" role="tabpanel" aria-labelledby="tab-summary" hidden>
-          <div class="tool-row">
-            <button id="generate-summary" class="primary-button"><i data-lucide="sparkles"></i>生成地图</button>
-            <span id="summary-status" class="muted"></span>
-          </div>
-          <div id="knowledge-map" class="knowledge-map empty-state">选择资料后生成。</div>
-          <details id="summary-panel" class="summary-panel">
-            <summary>详细提纲</summary>
-            <article id="summary-output" class="markdown-output empty-state"></article>
-          </details>
-        </section>
-
-        <section id="view-planner" class="view" role="tabpanel" aria-labelledby="tab-planner" hidden>
-          <div class="tool-row">
-            <label>
-              考试日期
-              <input id="plan-exam-date" type="date" />
-            </label>
-            <label>
-              每天分钟
-              <input id="plan-daily-minutes" type="number" min="20" max="480" value="90" />
-            </label>
-            <label>
-              目标
-              <select id="plan-goal">
-                <option value="高分">高分</option>
-                <option value="及格">及格</option>
-                <option value="冲刺满分">冲刺满分</option>
-              </select>
-            </label>
-            <label class="check-label"><input id="plan-cramming" type="checkbox" />临时抱佛脚</label>
-            <button id="generate-plan" class="primary-button"><i data-lucide="calendar-plus"></i>生成复习计划</button>
-            <span id="planner-status" class="muted"></span>
-          </div>
-          <section id="planner-next" class="planner-next empty-state">生成后显示下一步。</section>
-          <div class="planner-layout">
-            <div id="planner-grid" class="planner-grid"></div>
-            <aside class="session-panel">
-              <div class="section-heading">
-                <h3>完成记录</h3>
-                <span class="muted">按当前科目</span>
-              </div>
-              <div id="session-list" class="item-list"></div>
-            </aside>
-          </div>
-        </section>
-
-        <section id="view-cram" class="view" role="tabpanel" aria-labelledby="tab-cram" hidden>
-          <div class="tool-row">
-            <label>
-              冲刺时长
-              <input id="cram-total-minutes" type="number" min="30" max="240" value="90" />
-            </label>
-            <label>
-              限时题量
-              <input id="cram-question-count" type="number" min="3" max="20" value="10" />
-            </label>
-            <button id="generate-cram" class="primary-button"><i data-lucide="flame"></i>生成冲刺包</button>
-            <span id="cram-status" class="muted"></span>
-          </div>
-          <section id="cram-output" class="cram-output empty-state">生成后显示冲刺清单。</section>
-        </section>
-
-        <section id="view-quiz" class="view" role="tabpanel" aria-labelledby="tab-quiz" hidden>
-          <div class="quiz-controls">
-            <label>
-              题量
-              <input id="quiz-count" type="number" min="3" max="30" value="8" />
-            </label>
-            <label>
-              难度
-              <select id="quiz-difficulty">
-                <option value="混合">混合</option>
-                <option value="basic">basic</option>
-                <option value="medium">medium</option>
-                <option value="hard">hard</option>
-                <option value="comprehensive">comprehensive</option>
-              </select>
-            </label>
-            <details class="type-filter-panel">
-              <summary>题型筛选</summary>
-              <div class="type-filter-grid">
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="concept_understanding" checked />概念</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="formula_application" checked />公式</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="calculation" checked />计算</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="derivation_proof" checked />推导</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="mistake_diagnosis" checked />易错</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="exam_practice" checked />考试题</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="textbook_exercise" checked />教材题</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="variant" checked />变式</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="comprehensive" checked />综合</label>
-                <label class="check-label"><input type="checkbox" name="quiz-type" value="subjective_recall" checked />复述</label>
-              </div>
-            </details>
-            <button id="generate-quiz" class="primary-button"><i data-lucide="play"></i>生成题目</button>
-          </div>
-          <div id="quiz-quality" class="quality-panel empty-state">生成后显示质量。</div>
-          <div id="quiz-status" class="muted"></div>
-          <div id="quiz-list" class="item-list"></div>
-        </section>
-
-        <section id="view-solver" class="view" role="tabpanel" aria-labelledby="tab-solver" hidden>
-          <div class="solver-layout">
-            <article class="item-card solver-input-panel">
-              <div class="section-heading">
-                <h3>题目输入</h3>
-                <span class="muted">粘贴题干、条件和你的尝试</span>
-              </div>
-              <label class="solver-question-label">
-                <textarea id="solver-input" class="solver-textarea" placeholder="输入需要拆解的题目：已知条件、求解目标、图示说明或你卡住的步骤。"></textarea>
-              </label>
-              <div class="tool-row solver-tool-row">
-                <button id="generate-solution" class="primary-button" type="button"><i data-lucide="sparkles"></i>生成解答</button>
-                <button id="save-solver-memory" class="secondary-button" type="button"><i data-lucide="save"></i>固化记忆</button>
-                <span id="solver-status" class="muted status-note" aria-live="polite"></span>
-              </div>
-            </article>
-
-            <article id="solver-output" class="markdown-output solver-output empty-state">生成后显示分步解答、关键公式和易错提醒。</article>
-
-            <article class="item-card solver-memory-panel">
-              <div class="section-heading">
-                <h3>复习记忆</h3>
-                <span class="muted">保存后的解题模式</span>
-              </div>
-              <div id="solver-memory-list" class="item-list solver-list empty-state">暂无复习记忆。</div>
-            </article>
-
-            <article class="item-card solver-history-panel">
-              <div class="section-heading">
-                <h3>历史题目</h3>
-                <span class="muted">最近解过的题</span>
-              </div>
-              <div id="solver-history-list" class="item-list solver-list empty-state">暂无历史题目。</div>
-            </article>
-          </div>
-        </section>
-
-        <section id="view-ask" class="view" role="tabpanel" aria-labelledby="tab-ask" hidden>
-          <form id="ask-form" class="ask-box">
-            <input id="ask-input" placeholder="比如：弯矩正负号怎么判断？这章有哪些易错点？" autocomplete="off" />
-            <button class="primary-button" type="submit"><i data-lucide="send"></i>提问</button>
-          </form>
-          <article id="ask-output" class="markdown-output empty-state">提问后显示回答。</article>
-        </section>
-
-        <section id="view-mistakes" class="view" role="tabpanel" aria-labelledby="tab-mistakes" hidden>
-          <div class="section-heading">
-            <h3>错题本</h3>
-          </div>
-          <div id="mistake-list" class="item-list"></div>
-        </section>
-
-        <section id="view-settings" class="view" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <section id="settings-panel" class="settings-panel" hidden>
           <form id="settings-form" class="settings-grid">
-            <div class="mode-toggle" role="radiogroup" aria-label="生成模式">
-              <label><input type="radio" name="provider" value="local" checked />本地规则版</label>
-              <label><input type="radio" name="provider" value="api" />API 增强版</label>
-            </div>
             <label>
               API Base URL
               <input id="api-base-url" placeholder="https://api.openai.com/v1" autocomplete="off" />
             </label>
             <label>
               模型
-              <div class="api-model-row">
-                <select id="api-model" autocomplete="off"></select>
-                <button id="refresh-api-models" class="secondary-button" type="button"><i data-lucide="refresh-cw"></i>检测模型</button>
+              <div class="model-row">
+                <select id="api-model"></select>
+                <button id="refresh-models" class="secondary-button" type="button"><i data-lucide="refresh-cw"></i>检测</button>
               </div>
             </label>
             <label>
@@ -321,18 +79,46 @@
             </label>
             <label class="check-label"><input id="clear-api-key" type="checkbox" />清除已保存的 API Key</label>
             <div class="settings-actions">
-              <button id="test-api-connection" class="secondary-button" type="button"><i data-lucide="plug-zap"></i>测试连接</button>
-              <button class="primary-button" type="submit"><i data-lucide="save"></i>保存设置</button>
+              <button id="test-api" class="secondary-button" type="button"><i data-lucide="plug"></i>测试连接</button>
+              <button class="primary-button" type="submit"><i data-lucide="save"></i>保存</button>
             </div>
-            <p id="api-connection-status" class="settings-status muted">先填写 Base URL 和 API Key，然后检测模型。</p>
+            <p id="settings-status" class="status-note">API Key 保存在用户目录，不写入项目数据库。</p>
           </form>
-          <p class="muted settings-note">默认本地模式；API Key 会写入用户目录中的独立密钥文件，不会进项目数据库。</p>
         </section>
+
+        <section class="intent-row" aria-label="快捷任务">
+          <button class="intent-button active" data-intent="teach_materials" type="button"><i data-lucide="book-open-check"></i><span>从 0 教课件</span></button>
+          <button class="intent-button" data-intent="solve_homework" type="button"><i data-lucide="calculator"></i><span>解析作业图</span></button>
+          <button class="intent-button" data-intent="final_review" type="button"><i data-lucide="calendar-check"></i><span>期末复习</span></button>
+        </section>
+
+        <section id="chat-log" class="chat-log" aria-live="polite"></section>
+
+        <form id="chat-form" class="chat-form">
+          <textarea id="chat-input" placeholder="把需求直接发给助教：例如“把这份 PPT 从零教会我”“解这张作业图”“根据所有资料给我期末冲刺计划”"></textarea>
+          <button id="send-message" class="primary-button" type="submit"><i data-lucide="send"></i>发送</button>
+        </form>
       </main>
+
+      <aside class="right-panel">
+        <section class="panel-block">
+          <div class="section-heading">
+            <h2>复习档案</h2>
+            <span id="artifact-count">0</span>
+          </div>
+          <div id="artifact-list" class="artifact-list empty-state">助教回答后会沉淀教学、解题和复习卡片。</div>
+        </section>
+        <section class="panel-block">
+          <div class="section-heading">
+            <h2>来源</h2>
+            <span>当前回答</span>
+          </div>
+          <div id="source-list" class="source-list empty-state">回答中的资料引用会显示在这里。</div>
+        </section>
+      </aside>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-
     <script src="/vendor/marked.umd.js"></script>
     <script src="/vendor/lucide.js"></script>
     <script src="/app.js"></script>

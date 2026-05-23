@@ -92,15 +92,43 @@ function probePort(port) {
 
 function openBrowser(url) {
   const platform = process.platform;
-  if (platform === "darwin") spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
-  else if (platform === "win32") spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
-  else spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+  const command = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
+  const args = platform === "darwin" ? [url] : platform === "win32" ? ["/c", "start", "", url] : [url];
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.on("error", (error) => appendLog(`browser open failed: ${error.message || String(error)}`));
+    child.unref();
+    appendLog(`browser open requested: ${url}`);
+  } catch (error) {
+    appendLog(`browser open failed: ${error.message || String(error)}`);
+  }
+}
+
+async function waitForApp(port, timeoutMs = 7000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = await requestJson(port, "/api/state");
+    if (isCompatibleAppState(state)) return state;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return null;
+}
+
+function isCompatibleAppState(state) {
+  return Boolean(
+    state &&
+      state.version === 2 &&
+      Array.isArray(state.courses) &&
+      state.settings &&
+      state.settings.provider === "api" &&
+      Object.prototype.hasOwnProperty.call(state, "apiConfigured"),
+  );
 }
 
 async function findExistingApp() {
   for (const port of PORTS) {
     const state = await requestJson(port, "/api/state");
-    if (state && state.workspace && Array.isArray(state.courses)) return port;
+    if (isCompatibleAppState(state)) return port;
   }
   return null;
 }
@@ -125,7 +153,7 @@ async function main() {
   const existingPort = await findExistingApp();
   if (existingPort) {
     const url = `http://${HOST}:${existingPort}`;
-    console.log(`复习台已经在运行，正在打开 ${url}`);
+    console.log(`API 课程助教已经在运行，正在打开 ${url}`);
     appendLog(`existing app found: ${url}`);
     openBrowser(url);
     return;
@@ -137,7 +165,7 @@ async function main() {
   }
 
   const url = `http://${HOST}:${port}`;
-  console.log(`正在启动复习台：${url}`);
+  console.log(`正在启动 API 课程助教：${url}`);
   appendLog(`starting server: ${url}`);
 
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -148,7 +176,13 @@ async function main() {
   appendLog(`using node: ${nodeBin}`);
   const child = spawn(nodeBin, ["server.cjs"], {
     cwd: ROOT,
-    env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`, HOST, PORT: String(port) },
+    env: {
+      ...process.env,
+      PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+      HOST,
+      PORT: String(port),
+      APP_LAUNCHED_BY_WRAPPER: "1",
+    },
     stdio,
   });
 
@@ -157,10 +191,15 @@ async function main() {
   });
   child.on("exit", (code) => {
     appendLog(`server exit: code=${code ?? 0}`);
-    if (code) notify("复习台已退出", `服务进程异常退出，退出码：${code}\n\n日志位置：${LOG_FILE}`, true);
+    if (code) notify("API 课程助教已退出", `服务进程异常退出，退出码：${code}\n\n日志位置：${LOG_FILE}`, true);
     process.exit(code || 0);
   });
-  setTimeout(() => openBrowser(url), 900);
+  const state = await waitForApp(port);
+  if (!state) {
+    fail("启动失败", `服务已启动但没有在 ${url} 返回可用状态。`);
+  }
+  appendLog(`server ready: ${url}`);
+  openBrowser(url);
 }
 
 main().catch((error) => {

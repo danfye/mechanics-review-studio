@@ -37,12 +37,15 @@ function request(path, method = "GET", body) {
 
 (async () => {
   const page = await request("/");
-  if (page.status !== 200 || !String(page.data).includes("理工科复习台")) {
+  if (page.status !== 200 || !String(page.data).includes("API 课程助教")) {
     throw new Error(`page failed: ${page.status}`);
   }
   console.log("page ok");
   const state = await request("/api/state");
   if (state.status !== 200) throw new Error(`state failed: ${state.status}`);
+  if (state.data.version !== 2 || !Array.isArray(state.data.courses) || !Array.isArray(state.data.materials)) {
+    throw new Error(`unexpected state shape: ${JSON.stringify(state.data).slice(0, 240)}`);
+  }
   console.log("state ok");
 })().catch((error) => {
   console.error(error);

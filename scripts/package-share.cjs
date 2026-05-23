@@ -3,15 +3,15 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { createRuntimeRequire } = require("../lib/server/runtime-require.cjs");
-const { createDbTemplate } = require("../lib/server/repository.cjs");
+const { createDbTemplate } = require("../server.cjs");
 const { createMacApp } = require("./create-macos-app.cjs");
 
 const ROOT = path.join(__dirname, "..");
 const DIST_DIR = path.join(ROOT, "dist");
-const PACKAGE_NAME = "stem-review-studio-share";
+const PACKAGE_NAME = "api-course-tutor-share";
 const STAGING_DIR = path.join(DIST_DIR, PACKAGE_NAME);
 const ZIP_PATH = path.join(DIST_DIR, `${PACKAGE_NAME}.zip`);
-const APP_NAME = "理工科复习台";
+const APP_NAME = "API 课程助教";
 
 const FILES_TO_COPY = [
   "server.cjs",
@@ -27,20 +27,20 @@ const DIRS_TO_COPY = [
   "samples",
 ];
 
-const FRIEND_README = `# 理工科复习台体验版
+const FRIEND_README = `# API 课程助教体验版
 
-这是一个本地运行的复习小工具。资料、错题和设置都保存在本文件夹里的 \`data/\`，默认不会上传到外部服务。
+这是一个本地运行、API 驱动的课程助教。没有 API 配置时不会生成教学或解题内容。
 
 ## 启动方式
 
 ### macOS
 
-优先双击 \`理工科复习台.app\`，也可以双击 \`启动-理工科复习台.command\`。如果系统提示无法打开，可以右键该文件，选择“打开”。
+优先双击 \`API 课程助教.app\`，也可以双击 \`启动-API课程助教.command\`。如果系统提示无法打开，可以右键该文件，选择“打开”。
 如果仍提示某个 \`.node\` 文件无法验证，请把整个文件夹移到“应用程序”或“桌面”后重新解压；新版体验包默认不再安装这类 PDF 渲染用的可选原生模块。
 
 ### Windows
 
-双击 \`启动-理工科复习台.bat\`。
+双击 \`启动-API课程助教.bat\`。
 
 启动后浏览器会打开：
 
@@ -60,6 +60,7 @@ https://nodejs.org/
 
 - 数据库：\`data/db.json\`
 - 上传资料：\`data/uploads/\`
+- API Key：保存在用户目录 \`~/.codex/stem-review-studio/api-key.json\`，不会写进体验包项目数据库。
 
 想重置体验数据时，关闭启动窗口后删除 \`data/db.json\`、\`data/uploads/\` 和 \`data/logs/\` 里的文件，再重新启动即可。
 `;
@@ -165,8 +166,8 @@ async function main() {
   await fsp.mkdir(path.join(STAGING_DIR, "data", "uploads"), { recursive: true });
   await fsp.writeFile(path.join(STAGING_DIR, "data", "db.json"), JSON.stringify(createDbTemplate(), null, 2));
   await writeText("README_FOR_FRIENDS.md", FRIEND_README);
-  await writeText("启动-理工科复习台.command", START_MAC, 0o755);
-  await writeText("启动-理工科复习台.bat", START_WIN);
+  await writeText("启动-API课程助教.command", START_MAC, 0o755);
+  await writeText("启动-API课程助教.bat", START_WIN);
 
   await installProductionDependencies();
   if (process.platform === "darwin") {
@@ -174,7 +175,7 @@ async function main() {
       root: STAGING_DIR,
       distDir: STAGING_DIR,
       appName: APP_NAME,
-      bundleIdentifier: "local.stem-review.share.launcher",
+      bundleIdentifier: "local.api-course-tutor.share.launcher",
       portable: true,
     });
   }
