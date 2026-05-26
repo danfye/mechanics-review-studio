@@ -45,6 +45,10 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr) 320px;
@@ -304,6 +308,19 @@ i {
   border-radius: var(--radius);
 }
 
+.material-card {
+  cursor: grab;
+}
+
+.material-card:active {
+  cursor: grabbing;
+}
+
+.material-card.dragging {
+  opacity: 0.58;
+  border-color: rgba(94, 234, 212, 0.4);
+}
+
 .material-card p,
 .artifact-card p,
 .source-card p {
@@ -328,6 +345,24 @@ i {
   color: var(--accent);
   font-size: 12px;
   font-weight: 720;
+}
+
+.api-state {
+  max-width: min(72vw, 680px);
+  overflow-wrap: anywhere;
+}
+
+.api-state.checking {
+  color: var(--accent-2);
+}
+
+.api-state.ok {
+  color: var(--accent);
+}
+
+.api-state.error,
+.api-state.unconfigured {
+  color: var(--danger);
 }
 
 .setup-alert {
@@ -441,6 +476,28 @@ i {
   justify-self: start;
 }
 
+.message.pending {
+  opacity: 0.86;
+}
+
+.thinking-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .message-meta {
   color: var(--subtle);
   font-size: 12px;
@@ -449,6 +506,26 @@ i {
 .message-body {
   overflow-wrap: anywhere;
   line-height: 1.65;
+}
+
+.message-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.message-refs span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 5px;
+  padding: 4px 7px;
+  color: var(--accent-2);
+  background: rgba(147, 197, 253, 0.08);
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  border-radius: 999px;
+  font-size: 12px;
 }
 
 .message-body p,
@@ -493,6 +570,59 @@ i {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   margin-top: 14px;
+  align-items: end;
+}
+
+.chat-dropzone {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px dashed transparent;
+  border-radius: var(--radius);
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.chat-dropzone.drag-over {
+  background: rgba(94, 234, 212, 0.08);
+  border-color: rgba(94, 234, 212, 0.42);
+}
+
+.chat-reference-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  align-items: center;
+}
+
+.chat-reference-list.empty {
+  color: var(--subtle);
+  font-size: 12px;
+}
+
+.reference-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: rgba(94, 234, 212, 0.08);
+  border-color: rgba(94, 234, 212, 0.22);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.reference-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-form textarea {
@@ -583,6 +713,10 @@ i {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .api-state {
+    max-width: 100%;
   }
 
   .message {

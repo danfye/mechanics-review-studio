@@ -88,14 +88,19 @@
 
         <section class="intent-row" aria-label="快捷任务">
           <button class="intent-button active" data-intent="teach_materials" type="button"><i data-lucide="book-open-check"></i><span>从 0 教课件</span></button>
-          <button class="intent-button" data-intent="solve_homework" type="button"><i data-lucide="calculator"></i><span>解析作业图</span></button>
+          <button class="intent-button" data-intent="solve_homework" type="button"><i data-lucide="calculator"></i><span>解析作业图/PDF</span></button>
           <button class="intent-button" data-intent="final_review" type="button"><i data-lucide="calendar-check"></i><span>期末复习</span></button>
         </section>
 
         <section id="chat-log" class="chat-log" aria-live="polite"></section>
 
         <form id="chat-form" class="chat-form">
-          <textarea id="chat-input" placeholder="把需求直接发给助教：例如“把这份 PPT 从零教会我”“解这张作业图”“根据所有资料给我期末冲刺计划”"></textarea>
+          <div id="chat-dropzone" class="chat-dropzone">
+            <div id="chat-reference-list" class="chat-reference-list empty">
+              <span>可把左侧资料拖到这里，指定本轮使用的文件。</span>
+            </div>
+            <textarea id="chat-input" placeholder="把需求直接发给助教：例如“把这份 PPT 从零教会我”“解这张作业图或 PDF”“根据所有资料给我期末冲刺计划”"></textarea>
+          </div>
           <button id="send-message" class="primary-button" type="submit"><i data-lucide="send"></i>发送</button>
         </form>
       </main>

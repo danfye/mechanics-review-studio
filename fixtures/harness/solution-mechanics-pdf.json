@@ -1,0 +1,38 @@
+{
+  "id": "solution-mechanics-pdf",
+  "type": "solution",
+  "course": {
+    "id": "harness_course_mechanics_pdf",
+    "name": "材料力学"
+  },
+  "documents": [
+    {
+      "id": "harness_doc_axial_homework_pdf",
+      "courseId": "harness_course_mechanics_pdf",
+      "originalName": "轴向拉压作业.pdf",
+      "type": "pdf",
+      "mimeType": "application/pdf",
+      "text": "## 第 1 页\n作业题：等截面直杆面积 A、长度 L、弹性模量 E，受到轴向拉力 F。求横截面正应力和轴向伸长量，并说明公式适用条件。\n\n## 第 2 页\n提示：先用截面法确定轴力 F_N，再使用 σ = F_N / A 和 ΔL = F_N L / (E A)。注意统一 N、kN、mm、m 的单位。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "作业题：等截面直杆面积 A、长度 L、弹性模量 E，受到轴向拉力 F。求横截面正应力和轴向伸长量，并说明公式适用条件。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "提示：先用截面法确定轴力 F_N，再使用 σ = F_N / A 和 ΔL = F_N L / (E A)。注意统一 N、kN、mm、m 的单位。"
+        }
+      ],
+      "warning": ""
+    }
+  ],
+  "question": "请解析上传的 PDF 作业题，给出完整步骤、答案和单位检查。",
+  "expected": {
+    "relatedConcepts": ["轴向拉压", "轴力", "正应力", "胡克定律"],
+    "formulaTerms": ["F_N", "A", "L", "E"],
+    "reviewCardTypes": ["method", "formula", "pitfall", "drill"],
+    "minimumQualityScore": 75,
+    "minimumReviewCards": 4,
+    "requireSourceRefs": true
+  }
+}

@@ -1,4 +1,7 @@
 const path = require("node:path");
+const os = require("node:os");
+const { extractChatCompletionContent } = require("../lib/server/api-client.cjs");
+const { defaultApiKeyPath } = require("../lib/server/api-key-store.cjs");
 const { createRuntimeRequire } = require("../lib/server/runtime-require.cjs");
 const { createMaterialService } = require("../lib/server/material-service.cjs");
 const { createAssistantService } = require("../lib/server/assistant-service.cjs");
@@ -57,6 +60,19 @@ async function makePptx() {
   db.settings = { provider: "api", apiBaseUrl: "https://example.test/v1", model: "model", apiKey: "secret" };
   const state = publicState(db);
   if (!state.apiConfigured || state.settings.apiKey !== "__SET__") throw new Error("public state API redaction failed");
+
+  if (!defaultApiKeyPath().startsWith(os.userInfo().homedir)) {
+    throw new Error("API key path must use the real user home, not a preview HOME override");
+  }
+
+  const streamed = [
+    'data: {"choices":[{"delta":{"content":"{\\\"answer_markdown\\\":"}}]}',
+    'data: {"choices":[{"delta":{"content":"\\\"可以回答\\\"}"}}]}',
+    "data: [DONE]",
+  ].join("\n\n");
+  if (extractChatCompletionContent(streamed) !== '{"answer_markdown":"可以回答"}') {
+    throw new Error("SSE chat completion parsing failed");
+  }
   console.log("core ok");
 })().catch((error) => {
   console.error(error);

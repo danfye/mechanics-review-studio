@@ -124,10 +124,10 @@ async function writeRawDb(db) {
   await fsp.writeFile(DB_PATH, JSON.stringify(db, null, 2));
 }
 
-async function writeDb(db) {
+async function writeDb(db, options = {}) {
   const apiKey = normalizeApiKey(db.settings?.apiKey);
   if (apiKey) await apiKeyStore.saveApiKey(apiKey);
-  else if (Object.prototype.hasOwnProperty.call(db.settings || {}, "apiKey")) await apiKeyStore.clearApiKey();
+  else if (options.clearApiKey === true) await apiKeyStore.clearApiKey();
   const publicDb = normalizeDb({
     ...db,
     settings: {
@@ -279,6 +279,17 @@ async function handleAssistantMessage(req, res, db) {
   const text = String(body.message || "").trim();
   if (!text) return json(res, 400, { error: "消息不能为空。" });
   assistantService.assertApiReady(db.settings);
+  const requestedMaterialIds = Array.isArray(body.materialIds)
+    ? body.materialIds.map((materialId) => String(materialId || "").trim()).filter(Boolean)
+    : [];
+  const requestedMaterialIdSet = new Set(requestedMaterialIds);
+  const availableMaterials = db.materials.filter((material) => material.courseId === course.id);
+  const selectedMaterials = requestedMaterialIdSet.size
+    ? availableMaterials.filter((material) => requestedMaterialIdSet.has(material.id))
+    : availableMaterials;
+  if (requestedMaterialIdSet.size && selectedMaterials.length !== requestedMaterialIdSet.size) {
+    return json(res, 400, { error: "拖入的资料不属于当前科目或已经不存在。" });
+  }
   let conversation = db.conversations.find((item) => item.courseId === course.id);
   if (!conversation) {
     conversation = { id: id("conv"), courseId: course.id, title: `${course.name} 助教`, createdAt: now(), updatedAt: now() };
@@ -291,13 +302,23 @@ async function handleAssistantMessage(req, res, db) {
     role: "user",
     intent: assistantService.inferIntent(body),
     text,
+    materialRefs: requestedMaterialIdSet.size
+      ? selectedMaterials.map((material) => ({
+        id: material.id,
+        originalName: material.originalName,
+        kind: material.kind,
+      }))
+      : [],
     createdAt: now(),
   };
   db.messages.push(userMessage);
   await writeDb(db);
 
   const freshDb = await readDb();
-  const materials = freshDb.materials.filter((material) => material.courseId === course.id);
+  const courseMaterials = freshDb.materials.filter((material) => material.courseId === course.id);
+  const materials = requestedMaterialIdSet.size
+    ? courseMaterials.filter((material) => requestedMaterialIdSet.has(material.id))
+    : courseMaterials;
   const historyMessages = freshDb.messages.filter((message) => message.courseId === course.id);
   const artifacts = freshDb.artifacts.filter((artifact) => artifact.courseId === course.id);
   const result = await assistantService.runAssistant({
@@ -369,7 +390,7 @@ async function handleSettingsSave(req, res, db) {
   const body = await readJson(req);
   const settings = resolveApiSettings(db.settings, { ...body, provider: "api" });
   db.settings = { ...settings, provider: "api" };
-  await writeDb(db);
+  await writeDb(db, { clearApiKey: Boolean(body.clearApiKey) });
   return json(res, 200, { settings: publicState(await readDb()).settings, state: publicState(await readDb()) });
 }
 
@@ -433,6 +454,9 @@ async function handleStatic(req, res, url) {
     await fsp.access(filePath);
     return streamFile(res, filePath);
   } catch {
+    if (req.method === "GET" && !path.extname(url.pathname)) {
+      return streamFile(res, path.join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
+    }
     res.writeHead(404);
     res.end("Not found");
   }
