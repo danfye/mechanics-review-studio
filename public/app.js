@@ -28,6 +28,10 @@
       headers: options.body instanceof FormData ? options.headers || {} : { "content-type": "application/json", ...(options.headers || {}) },
     });
     const data = await response.json().catch(() => ({}));
+    if (response.status === 401 && data.authRequired) {
+      window.location.href = "/login";
+      throw new Error("请先登录。");
+    }
     if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
     return data;
   }
@@ -50,6 +54,38 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function normalizeMathDelimiters(value) {
+    return String(value || "")
+      .replace(/\\\[/g, "$$")
+      .replace(/\\\]/g, "$$")
+      .replace(/\\\(/g, "$")
+      .replace(/\\\)/g, "$");
+  }
+
+  function renderMathIn(target) {
+    if (!target || !window.renderMathInElement) return;
+    window.renderMathInElement(target, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$", right: "$", display: false },
+        { left: "\\[", right: "\\]", display: true },
+        { left: "\\(", right: "\\)", display: false },
+      ],
+      throwOnError: false,
+      strict: "ignore",
+      trust: false,
+    });
+  }
+
+  function refreshRichContent(root = document) {
+    renderMathIn(root);
+    iconRefresh();
+  }
+
+  function mathText(value) {
+    return escapeHtml(normalizeMathDelimiters(value));
   }
 
   function course() {
@@ -257,6 +293,7 @@
     log.scrollTop = log.scrollHeight;
     const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
     renderSources(lastAssistant?.sourceRefs || []);
+    refreshRichContent(log);
   }
 
   function pendingMessages() {
@@ -280,8 +317,9 @@
   }
 
   function markdown(value) {
-    if (window.marked) return window.marked.parse(String(value || ""));
-    return `<p>${escapeHtml(value)}</p>`;
+    const normalized = normalizeMathDelimiters(value);
+    if (window.marked) return window.marked.parse(normalized);
+    return `<p>${escapeHtml(normalized)}</p>`;
   }
 
   function intentLabel(intent) {
@@ -336,10 +374,11 @@
         (ref) => `<article class="source-card">
           <strong>${escapeHtml(ref.file_name || ref.document_id || "资料")}</strong>
           <span>${escapeHtml(ref.unit_label || (Number.isInteger(ref.unit_index) ? `片段 ${ref.unit_index + 1}` : "来源片段"))}</span>
-          <p>${escapeHtml(ref.excerpt || "")}</p>
+          <p>${mathText(ref.excerpt || "")}</p>
         </article>`,
       )
       .join("");
+    refreshRichContent(list);
   }
 
   function renderArtifacts() {
@@ -358,11 +397,12 @@
         (artifact) => `<article class="artifact-card">
           <span>${escapeHtml(artifactTypeLabel(artifact.type))}</span>
           <strong>${escapeHtml(artifact.title)}</strong>
-          ${artifact.body ? `<p>${escapeHtml(artifact.body).slice(0, 220)}</p>` : ""}
-          ${artifact.items?.length ? `<ul>${artifact.items.slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+          ${artifact.body ? `<p class="artifact-body">${mathText(String(artifact.body).slice(0, 220))}</p>` : ""}
+          ${artifact.items?.length ? `<ul>${artifact.items.slice(0, 5).map((item) => `<li>${mathText(item)}</li>`).join("")}</ul>` : ""}
         </article>`,
       )
       .join("");
+    refreshRichContent(list);
   }
 
   function artifactTypeLabel(type) {
@@ -371,10 +411,17 @@
 
   async function loadState({ testConnection = true } = {}) {
     setData(await api("/api/state"));
+    await refreshAuthStatus();
     setActiveIntent(state.activeIntent, { replace: true });
     setSettingsOpen(state.settingsOpen, { replace: true });
     render();
     if (testConnection && state.data?.apiConfigured) autoTestApiConnection();
+  }
+
+  async function refreshAuthStatus() {
+    const response = await fetch("/auth/status");
+    const auth = await response.json().catch(() => ({}));
+    $("#logout-button").hidden = !auth.enabled;
   }
 
   async function createCourse(event) {
@@ -620,6 +667,10 @@
     $("#chat-form").addEventListener("submit", sendMessage);
     $("#settings-toggle").addEventListener("click", () => {
       setSettingsOpen($("#settings-panel").hidden);
+    });
+    $("#logout-button").addEventListener("click", async () => {
+      await fetch("/auth/logout", { method: "POST" }).catch(() => {});
+      window.location.href = "/login";
     });
     $("#refresh-models").addEventListener("click", () => refreshModels().catch((error) => setSettingsStatus(error.message)));
     $("#test-api").addEventListener("click", () => testApi().catch((error) => setSettingsStatus(error.message)));

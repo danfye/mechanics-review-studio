@@ -43,10 +43,26 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function launcherScript(root, portable) {
+function launcherScript(root, portable, launcherCommand, terminal) {
   const projectDirLine = portable
     ? 'PROJECT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"'
     : `PROJECT_DIR=${shellQuote(root)}`;
+  const command = launcherCommand || "scripts/launch-local.cjs";
+  if (terminal) {
+    return `#!/bin/zsh
+${projectDirLine}
+cd "$PROJECT_DIR" || exit 1
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+SCRIPT_PATH="$PROJECT_DIR/${command}"
+osascript <<OSA
+tell application "Terminal"
+  activate
+  do script "cd " & quoted form of "$PROJECT_DIR" & "; clear; echo 'API 课程助教网页访问'; echo '保持这个窗口打开，外网网页才可访问。'; echo ''; exec node " & quoted form of "$SCRIPT_PATH"
+end tell
+OSA
+`;
+  }
   return `#!/bin/zsh
 ${projectDirLine}
 cd "$PROJECT_DIR" || exit 1
@@ -75,7 +91,7 @@ if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
   exit 1
 fi
 
-exec "$NODE_BIN" scripts/launch-local.cjs
+exec "$NODE_BIN" ${command}
 `;
 }
 
@@ -213,6 +229,8 @@ async function createMacApp(options = {}) {
   const appName = options.appName || DEFAULT_APP_NAME;
   const bundleIdentifier = options.bundleIdentifier || "local.api-course-tutor.launcher";
   const portable = Boolean(options.portable);
+  const launcherCommand = options.launcherCommand || "scripts/launch-local.cjs";
+  const terminal = Boolean(options.terminal);
   const appDir = path.join(distDir, `${appName}.app`);
   const contentsDir = path.join(appDir, "Contents");
   const macosDir = path.join(contentsDir, "MacOS");
@@ -222,7 +240,7 @@ async function createMacApp(options = {}) {
   await fsp.mkdir(macosDir, { recursive: true });
   await fsp.mkdir(resourcesDir, { recursive: true });
   await fsp.writeFile(path.join(contentsDir, "Info.plist"), plist(appName, bundleIdentifier));
-  await fsp.writeFile(path.join(macosDir, "launcher"), launcherScript(root, portable), { mode: 0o755 });
+  await fsp.writeFile(path.join(macosDir, "launcher"), launcherScript(root, portable, launcherCommand, terminal), { mode: 0o755 });
   await fsp.chmod(path.join(macosDir, "launcher"), 0o755);
   await makeIcon(resourcesDir);
 
@@ -236,7 +254,15 @@ async function main() {
     process.exit(1);
   }
 
-  const appDir = await createMacApp();
+  const webMode = process.argv.includes("--web");
+  const appDir = await createMacApp(webMode
+    ? {
+        appName: "API 课程助教网页访问",
+        bundleIdentifier: "local.api-course-tutor.web-launcher",
+        launcherCommand: "scripts/launch-web.cjs",
+        terminal: true,
+      }
+    : {});
   console.log(`macOS 应用已生成：${appDir}`);
 }
 

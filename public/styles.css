@@ -181,6 +181,7 @@ select:focus {
 .inline-input,
 .model-row,
 .settings-actions,
+.topbar-actions,
 .topbar,
 .section-heading {
   display: flex;
@@ -196,6 +197,11 @@ select:focus {
 .section-heading,
 .topbar {
   justify-content: space-between;
+}
+
+.topbar-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .section-heading h2 {
@@ -245,6 +251,33 @@ i {
   width: 17px;
   height: 17px;
   flex: 0 0 auto;
+}
+
+.login-page {
+  min-height: 100vh;
+}
+
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 20px;
+}
+
+.login-panel {
+  display: grid;
+  width: min(100%, 420px);
+  gap: 22px;
+  padding: 24px;
+  background: rgba(20, 26, 34, 0.9);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
+}
+
+.login-form {
+  display: grid;
+  gap: 12px;
 }
 
 .course-list,
@@ -507,6 +540,32 @@ i {
 .message-body {
   overflow-wrap: anywhere;
   line-height: 1.65;
+}
+
+.message-body .katex,
+.source-card .katex,
+.artifact-card .katex {
+  color: var(--text);
+  font-size: 1.04em;
+}
+
+.message-body .katex-display,
+.source-card .katex-display,
+.artifact-card .katex-display {
+  max-width: 100%;
+  margin: 10px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgba(15, 23, 42, 0.34);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+}
+
+.message-body .katex-display > .katex,
+.source-card .katex-display > .katex,
+.artifact-card .katex-display > .katex {
+  min-width: max-content;
 }
 
 .message-refs {

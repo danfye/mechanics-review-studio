@@ -43,6 +43,40 @@ macOS 可以继续生成应用外壳：
 npm run make:mac-app
 ```
 
+也可以生成专门用于网页访问的 macOS 应用外壳：
+
+```bash
+npm run make:web-app
+```
+
+## 个人网页访问
+
+如果只是自己使用、暂时没有域名，可以让程序继续在本机运行，再用 Cloudflare Tunnel 生成一个临时 HTTPS 网页地址：
+
+```bash
+brew install cloudflared
+npm run web
+```
+
+macOS 上也可以先运行 `npm run make:web-app`，然后双击 `dist/API 课程助教网页访问.app`。它和 `npm run web` 做同一件事：启动本机服务、启用网页登录保护，并打开 Cloudflare Tunnel。
+
+`npm run web` 会做三件事：
+
+- 启动本机服务，仍然只监听 `127.0.0.1`。
+- 启用网页登录保护；首次运行会在本机用户目录生成访问密码并打印在终端里。
+- 启动 `cloudflared tunnel --url http://127.0.0.1:<端口>`，并在终端输出本次 HTTPS 地址。
+
+打开 Cloudflare 输出的 `https://...trycloudflare.com` 地址后，先输入网页登录密码，再进入助教界面。无域名时这个地址可能变化；如果以后要固定网址，需要把域名接入 Cloudflare Tunnel。
+
+注意：这不是云端托管。电脑必须开机，`npm run web` 的终端窗口必须保持运行，外网网页才可以访问。关闭终端或电脑休眠后，外网地址会失效。
+
+如果想自定义网页登录密码，可以先设置环境变量再启动：
+
+```bash
+export API_COURSE_TUTOR_WEB_PASSWORD="换成你自己的强密码"
+npm run web
+```
+
 ## 使用流程
 
 1. 打开设置，填写 OpenAI-compatible API Base URL、API Key，检测并选择模型。

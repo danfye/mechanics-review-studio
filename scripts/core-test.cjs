@@ -2,6 +2,8 @@ const path = require("node:path");
 const os = require("node:os");
 const { extractChatCompletionContent } = require("../lib/server/api-client.cjs");
 const { defaultApiKeyPath } = require("../lib/server/api-key-store.cjs");
+const { createAuthService } = require("../lib/server/auth-service.cjs");
+const { createWebAuthConfig } = require("../lib/server/web-auth-config.cjs");
 const { createRuntimeRequire } = require("../lib/server/runtime-require.cjs");
 const { createMaterialService } = require("../lib/server/material-service.cjs");
 const { createAssistantService } = require("../lib/server/assistant-service.cjs");
@@ -73,6 +75,22 @@ async function makePptx() {
   if (extractChatCompletionContent(streamed) !== '{"answer_markdown":"可以回答"}') {
     throw new Error("SSE chat completion parsing failed");
   }
+
+  const katex = runtimeRequire("katex");
+  const renderedFormula = katex.renderToString("\\tau_w=\\mu \\frac{3U}{2\\delta}", {
+    displayMode: true,
+    throwOnError: false,
+    strict: "ignore",
+  });
+  if (!renderedFormula.includes("katex") || renderedFormula.includes("katex-error")) {
+    throw new Error("KaTeX formula rendering failed");
+  }
+
+  const auth = createAuthService({ enabled: true, config: createWebAuthConfig("web-test-password") });
+  if (!auth.verifyPassword("web-test-password")) throw new Error("web auth password verification failed");
+  if (auth.verifyPassword("wrong-password")) throw new Error("web auth accepted wrong password");
+  const cookie = auth.createSessionCookie();
+  if (!auth.isAuthenticated({ headers: { cookie } })) throw new Error("web auth session verification failed");
   console.log("core ok");
 })().catch((error) => {
   console.error(error);

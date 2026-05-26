@@ -19,6 +19,7 @@ const FILES_TO_COPY = [
   "README.md",
   "FEATURE_SUMMARY.md",
   "scripts/launch-local.cjs",
+  "scripts/launch-web.cjs",
 ];
 
 const DIRS_TO_COPY = [
@@ -50,6 +51,18 @@ http://127.0.0.1:4173
 
 如果 4173 端口被占用，脚本会自动尝试 4174、4175、4176、4177、4178。
 
+## 个人网页访问
+
+如果想在外网浏览器访问，macOS 可以双击 \`API 课程助教网页访问.app\`，也可以双击 \`网页登录-API课程助教.command\`。Windows 可以双击 \`网页登录-API课程助教.bat\`。
+
+第一次启动会生成网页登录密码并显示在终端里；启动成功后终端会输出 Cloudflare 的 \`https://...trycloudflare.com\` 临时地址。电脑和启动窗口必须保持运行，外网网页才可以访问。
+
+如果提示没有 \`cloudflared\`，请先安装 Cloudflare Tunnel 客户端。macOS 可运行：
+
+\`\`\`bash
+brew install cloudflared
+\`\`\`
+
 ## 需要的环境
 
 电脑需要先安装 Node.js 20 或更高版本。下载地址：
@@ -79,6 +92,20 @@ fi
 node scripts/launch-local.cjs
 `;
 
+const START_WEB_MAC = `#!/bin/zsh
+cd "$(dirname "$0")"
+if command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine . >/dev/null 2>&1 || true
+fi
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+if ! command -v node >/dev/null 2>&1; then
+  echo "未检测到 Node.js。请先安装 Node.js 20 或更高版本：https://nodejs.org/"
+  read "unused?按回车退出..."
+  exit 1
+fi
+node scripts/launch-web.cjs
+`;
+
 const START_WIN = `@echo off
 cd /d "%~dp0"
 where node >nul 2>nul
@@ -88,6 +115,18 @@ if errorlevel 1 (
   exit /b 1
 )
 node scripts\\launch-local.cjs
+pause
+`;
+
+const START_WEB_WIN = `@echo off
+cd /d "%~dp0"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo 未检测到 Node.js。请先安装 Node.js 20 或更高版本：https://nodejs.org/
+  pause
+  exit /b 1
+)
+node scripts\\launch-web.cjs
 pause
 `;
 
@@ -168,6 +207,8 @@ async function main() {
   await writeText("README_FOR_FRIENDS.md", FRIEND_README);
   await writeText("启动-API课程助教.command", START_MAC, 0o755);
   await writeText("启动-API课程助教.bat", START_WIN);
+  await writeText("网页登录-API课程助教.command", START_WEB_MAC, 0o755);
+  await writeText("网页登录-API课程助教.bat", START_WEB_WIN);
 
   await installProductionDependencies();
   if (process.platform === "darwin") {
@@ -176,6 +217,15 @@ async function main() {
       distDir: STAGING_DIR,
       appName: APP_NAME,
       bundleIdentifier: "local.api-course-tutor.share.launcher",
+      portable: true,
+    });
+    await createMacApp({
+      root: STAGING_DIR,
+      distDir: STAGING_DIR,
+      appName: "API 课程助教网页访问",
+      bundleIdentifier: "local.api-course-tutor.share.web-launcher",
+      launcherCommand: "scripts/launch-web.cjs",
+      terminal: true,
       portable: true,
     });
   }

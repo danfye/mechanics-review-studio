@@ -5,10 +5,12 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { createRuntimeRequire } = require("./lib/server/runtime-require.cjs");
 const { json, readBody } = require("./lib/server/http.cjs");
+const { createAuthService } = require("./lib/server/auth-service.cjs");
 const { createApiKeyStore, normalizeApiKey } = require("./lib/server/api-key-store.cjs");
 const { createChatApiClient, listApiModels, resolveApiSettings } = require("./lib/server/api-client.cjs");
 const { createMaterialService } = require("./lib/server/material-service.cjs");
 const { createAssistantService } = require("./lib/server/assistant-service.cjs");
+const { loadWebAuthConfig } = require("./lib/server/web-auth-config.cjs");
 
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, "data");
@@ -19,6 +21,8 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 4173);
 const AUTO_EXIT_ENABLED = process.env.APP_LAUNCHED_BY_WRAPPER === "1";
 const AUTO_EXIT_GRACE_MS = 9000;
+const WEB_AUTH_CONFIG = loadWebAuthConfig();
+const WEB_AUTH_ENV = process.env.API_COURSE_TUTOR_AUTH_REQUIRED;
 let lastHeartbeatAt = Date.now();
 let autoExitTimer = null;
 
@@ -31,9 +35,17 @@ const assistantService = createAssistantService({
   uploadPath: materialService.uploadPath,
   callChatApi,
 });
+const authService = createAuthService({
+  enabled: WEB_AUTH_ENV === "1",
+  config: WEB_AUTH_CONFIG,
+});
 
 function resolveMarkedUmdPath() {
   return path.join(path.dirname(runtimeRequire.resolve("marked")), "marked.umd.js");
+}
+
+function resolveKatexAssetPath(assetPath) {
+  return path.join(path.dirname(runtimeRequire.resolve("katex")), assetPath);
 }
 
 function now() {
@@ -398,6 +410,49 @@ async function handleSettingsSave(req, res, db) {
   return json(res, 200, { settings: publicState(await readDb()).settings, state: publicState(await readDb()) });
 }
 
+function isSecureRequest(req) {
+  return Boolean(req.socket?.encrypted) || String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https";
+}
+
+function redirectToLogin(res) {
+  res.writeHead(302, { location: "/login" });
+  res.end();
+}
+
+function unauthorized(req, res) {
+  if (req.url?.startsWith("/api/") || req.url?.startsWith("/auth/") || req.url?.startsWith("/uploads/")) {
+    return json(res, 401, { error: "请先登录。", authRequired: true });
+  }
+  return redirectToLogin(res);
+}
+
+async function handleAuth(req, res, pathname) {
+  if (req.method === "GET" && pathname === "/auth/status") {
+    return json(res, 200, { enabled: authService.isEnabled(), authenticated: authService.isAuthenticated(req) });
+  }
+  if (req.method === "POST" && pathname === "/auth/login") {
+    if (!authService.isEnabled()) return json(res, 200, { ok: true });
+    const body = await readJson(req, 64 * 1024);
+    const password = String(body.password || "");
+    if (!authService.verifyPassword(password)) return json(res, 401, { error: "密码不正确。" });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "set-cookie": authService.createSessionCookie({ secure: isSecureRequest(req) }),
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (req.method === "POST" && pathname === "/auth/logout") {
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "set-cookie": authService.clearSessionCookie(),
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  return json(res, 404, { error: "未知登录接口。" });
+}
+
 async function handleApi(req, res, pathname) {
   const db = await readDb();
   if (req.method === "POST" && pathname === "/api/heartbeat") {
@@ -440,8 +495,23 @@ function streamFile(res, filePath, contentType = contentTypeFor(filePath)) {
 }
 
 async function handleStatic(req, res, url) {
+  if (url.pathname === "/login") return streamFile(res, path.join(PUBLIC_DIR, "login.html"), "text/html; charset=utf-8");
   if (url.pathname === "/vendor/lucide.js") return streamFile(res, runtimeRequire.resolve("lucide/dist/umd/lucide.js"), "text/javascript; charset=utf-8");
   if (url.pathname === "/vendor/marked.umd.js") return streamFile(res, resolveMarkedUmdPath(), "text/javascript; charset=utf-8");
+  if (url.pathname === "/vendor/katex/katex.min.css") return streamFile(res, resolveKatexAssetPath("katex.min.css"), "text/css; charset=utf-8");
+  if (url.pathname === "/vendor/katex/katex.min.js") return streamFile(res, resolveKatexAssetPath("katex.min.js"), "text/javascript; charset=utf-8");
+  if (url.pathname === "/vendor/katex/auto-render.min.js") {
+    return streamFile(res, resolveKatexAssetPath("contrib/auto-render.min.js"), "text/javascript; charset=utf-8");
+  }
+  if (url.pathname.startsWith("/vendor/katex/fonts/")) {
+    const fontName = decodeURIComponent(url.pathname.slice("/vendor/katex/fonts/".length));
+    if (fontName.includes("/") || fontName.includes("\\") || fontName.startsWith(".")) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    return streamFile(res, resolveKatexAssetPath(`fonts/${fontName}`));
+  }
   if (url.pathname.startsWith("/uploads/")) {
     const storedName = decodeURIComponent(url.pathname.slice("/uploads/".length));
     return streamFile(res, materialService.uploadPath(storedName));
@@ -469,6 +539,11 @@ async function handleStatic(req, res, url) {
 async function requestHandler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+    if (url.pathname.startsWith("/auth/")) return await handleAuth(req, res, url.pathname);
+    if (authService.isEnabled() && !authService.isAuthenticated(req)) {
+      const loginAsset = url.pathname === "/login" || url.pathname === "/styles.css" || url.pathname === "/vendor/lucide.js";
+      if (!loginAsset) return unauthorized(req, res);
+    }
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url.pathname);
     return await handleStatic(req, res, url);
   } catch (error) {
@@ -479,6 +554,7 @@ async function requestHandler(req, res) {
 if (require.main === module) {
   ensureDataStore()
     .then(() => {
+      authService.requireConfigured();
       const server = http.createServer(requestHandler);
       server.listen(PORT, HOST, () => {
         scheduleAutoExitCheck(server);

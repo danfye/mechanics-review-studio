@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · API 课程助教</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-panel">
+        <div class="brand">
+          <div class="brand-mark"><i data-lucide="graduation-cap"></i></div>
+          <div>
+            <h1>API 课程助教</h1>
+            <p>个人网页访问</p>
+          </div>
+        </div>
+        <form id="login-form" class="login-form">
+          <label>
+            网页登录密码
+            <input id="login-password" type="password" autocomplete="current-password" autofocus />
+          </label>
+          <button class="primary-button" type="submit"><i data-lucide="log-in"></i>登录</button>
+          <p id="login-status" class="status-note">密码保存在本机用户目录，不写入课程数据库。</p>
+        </form>
+      </section>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/vendor/lucide.js"></script>
+    <script>
+      const form = document.querySelector("#login-form");
+      const password = document.querySelector("#login-password");
+      const status = document.querySelector("#login-status");
+      const toast = document.querySelector("#toast");
+      if (window.lucide) window.lucide.createIcons();
+      function show(message) {
+        toast.textContent = message;
+        toast.classList.add("show");
+        window.setTimeout(() => toast.classList.remove("show"), 2600);
+      }
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        status.textContent = "正在登录...";
+        try {
+          const response = await fetch("/auth/login", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ password: password.value }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || "登录失败。");
+          window.location.href = "/";
+        } catch (error) {
+          status.textContent = error.message;
+          show(error.message);
+        }
+      });
+    </script>
+  </body>
+</html>
