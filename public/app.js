@@ -65,18 +65,63 @@
   }
 
   function renderMathIn(target) {
-    if (!target || !window.renderMathInElement) return;
-    window.renderMathInElement(target, {
-      delimiters: [
-        { left: "$$", right: "$$", display: true },
-        { left: "$", right: "$", display: false },
-        { left: "\\[", right: "\\]", display: true },
-        { left: "\\(", right: "\\)", display: false },
-      ],
-      throwOnError: false,
-      strict: "ignore",
-      trust: false,
+    if (!target) return;
+    if (window.renderMathInElement) {
+      window.renderMathInElement(target, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false },
+          { left: "\\[", right: "\\]", display: true },
+          { left: "\\(", right: "\\)", display: false },
+        ],
+        throwOnError: false,
+        strict: "ignore",
+        trust: false,
+      });
+    }
+    renderMathFallback(target);
+  }
+
+  function renderMathFallback(target) {
+    if (!window.katex) return;
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue.includes("$")) return NodeFilter.FILTER_REJECT;
+        if (node.parentElement?.closest("script, style, textarea, code, pre, .katex")) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
     });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) replaceMathTextNode(node);
+  }
+
+  function replaceMathTextNode(node) {
+    const text = node.nodeValue;
+    const fragment = document.createDocumentFragment();
+    let index = 0;
+    const pattern = /\$\$([\s\S]+?)\$\$|\$([^\n$]+?)\$/g;
+    for (const match of text.matchAll(pattern)) {
+      if (match.index > index) fragment.append(document.createTextNode(text.slice(index, match.index)));
+      const tex = match[1] || match[2] || "";
+      const displayMode = Boolean(match[1]);
+      const wrapper = document.createElement(displayMode ? "div" : "span");
+      if (displayMode) wrapper.className = "katex-display-fallback";
+      try {
+        window.katex.render(tex, wrapper, {
+          displayMode,
+          throwOnError: false,
+          strict: "ignore",
+          trust: false,
+        });
+      } catch {
+        wrapper.textContent = match[0];
+      }
+      fragment.append(wrapper);
+      index = match.index + match[0].length;
+    }
+    if (index < text.length) fragment.append(document.createTextNode(text.slice(index)));
+    node.replaceWith(fragment);
   }
 
   function refreshRichContent(root = document) {
