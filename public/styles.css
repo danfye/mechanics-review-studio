@@ -83,8 +83,8 @@ button:disabled {
 }
 
 .main {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   max-height: calc(100vh - 32px);
   overflow: hidden;
   padding: 16px;
@@ -429,6 +429,7 @@ i {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
@@ -701,6 +702,8 @@ i {
 
   .main {
     min-height: 78vh;
+    max-height: none;
+    overflow: visible;
   }
 
   .settings-grid,

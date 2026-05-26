@@ -32,6 +32,10 @@ const assistantService = createAssistantService({
   callChatApi,
 });
 
+function resolveMarkedUmdPath() {
+  return path.join(path.dirname(runtimeRequire.resolve("marked")), "marked.umd.js");
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -437,7 +441,7 @@ function streamFile(res, filePath, contentType = contentTypeFor(filePath)) {
 
 async function handleStatic(req, res, url) {
   if (url.pathname === "/vendor/lucide.js") return streamFile(res, runtimeRequire.resolve("lucide/dist/umd/lucide.js"), "text/javascript; charset=utf-8");
-  if (url.pathname === "/vendor/marked.umd.js") return streamFile(res, runtimeRequire.resolve("marked/lib/marked.umd.js"), "text/javascript; charset=utf-8");
+  if (url.pathname === "/vendor/marked.umd.js") return streamFile(res, resolveMarkedUmdPath(), "text/javascript; charset=utf-8");
   if (url.pathname.startsWith("/uploads/")) {
     const storedName = decodeURIComponent(url.pathname.slice("/uploads/".length));
     return streamFile(res, materialService.uploadPath(storedName));

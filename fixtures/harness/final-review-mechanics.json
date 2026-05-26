@@ -1,0 +1,42 @@
+{
+  "id": "final-review-mechanics",
+  "type": "final_review",
+  "course": {
+    "id": "harness_course_mechanics_review",
+    "name": "材料力学"
+  },
+  "documents": [
+    {
+      "id": "harness_doc_mechanics_review_notes",
+      "courseId": "harness_course_mechanics_review",
+      "originalName": "材料力学期末复习提纲.txt",
+      "type": "txt",
+      "text": "## 第 1 页\n轴向拉压：先判断外力合力作用线是否与杆轴重合，再用截面法求轴力 F_N。正应力公式 sigma = F_N / A，轴向伸长量 delta_L = F_N L / (E A)。\n\n## 第 2 页\n扭转：圆轴扭转先画扭矩图，最大切应力 tau_max = T r / I_p，刚度条件常用扭转角 phi = T L / (G I_p)。\n\n## 第 3 页\n弯曲：弯矩图决定危险截面，正应力 sigma = M y / I。复习时要把轴力图、扭矩图、剪力图和弯矩图的符号规则分开记。\n\n## 第 4 页\n期末易错点：直接把外力当内力、单位没有统一、忽略公式适用条件、危险截面判断错误。考前最后检查表应包含模型判断、内力图、公式条件、单位和数量级。",
+      "units": [
+        {
+          "label": "第 1 页",
+          "text": "轴向拉压：先判断外力合力作用线是否与杆轴重合，再用截面法求轴力 F_N。正应力公式 sigma = F_N / A，轴向伸长量 delta_L = F_N L / (E A)。"
+        },
+        {
+          "label": "第 2 页",
+          "text": "扭转：圆轴扭转先画扭矩图，最大切应力 tau_max = T r / I_p，刚度条件常用扭转角 phi = T L / (G I_p)。"
+        },
+        {
+          "label": "第 3 页",
+          "text": "弯曲：弯矩图决定危险截面，正应力 sigma = M y / I。复习时要把轴力图、扭矩图、剪力图和弯矩图的符号规则分开记。"
+        },
+        {
+          "label": "第 4 页",
+          "text": "期末易错点：直接把外力当内力、单位没有统一、忽略公式适用条件、危险截面判断错误。考前最后检查表应包含模型判断、内力图、公式条件、单位和数量级。"
+        }
+      ]
+    }
+  ],
+  "message": "请根据当前材料力学资料生成期末复习重点排序、薄弱点处理顺序、限时训练和最后检查表。",
+  "expected": {
+    "requiredSections": ["重点", "薄弱点", "复习顺序", "限时训练", "最后检查表"],
+    "conceptTerms": ["轴向拉压", "截面法", "扭转", "弯曲", "危险截面"],
+    "formulaTerms": ["F_N", "A", "T", "I_p", "M"],
+    "minimumScore": 75
+  }
+}
